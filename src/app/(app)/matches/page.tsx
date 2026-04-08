@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { MessageCircle, Users, Dna, Trees } from 'lucide-react'
+import { Users, Dna, Trees } from 'lucide-react'
 
 const TIER_CONFIG = {
   jumeau: {
@@ -126,12 +126,6 @@ export default async function MatchesPage() {
                       <div className="text-sm font-bold text-gray-300">{match.genre_representativity ?? 100}%</div>
                       <div className="text-[10px] text-gray-600 leading-none">genres</div>
                     </div>
-                    <Link
-                      href={`/messages/${match.id}`}
-                      className="w-9 h-9 bg-gray-800 hover:bg-violet-600 border border-gray-700 hover:border-violet-500 rounded-lg flex items-center justify-center transition-colors"
-                    >
-                      <MessageCircle size={15} />
-                    </Link>
                   </div>
                 </div>
               ))}

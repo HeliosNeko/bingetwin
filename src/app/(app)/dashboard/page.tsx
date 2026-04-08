@@ -14,10 +14,11 @@ export default async function DashboardPage() {
     .eq('id', user.id)
     .single()
 
-  const { count: favCount } = await supabase
+  const { count: ratedCount } = await supabase
     .from('favorites')
     .select('*', { count: 'exact', head: true })
     .eq('user_id', user.id)
+    .not('rating', 'is', null)
 
   const { count: matchCount } = await supabase
     .from('matches')
@@ -25,7 +26,7 @@ export default async function DashboardPage() {
     .or(`user1_id.eq.${user.id},user2_id.eq.${user.id}`)
 
   const stats = [
-    { label: 'Favoris', value: favCount ?? 0, icon: Film, color: 'text-violet-400', bg: 'bg-violet-900/30' },
+    { label: 'Produits notés', value: ratedCount ?? 0, icon: Film, color: 'text-violet-400', bg: 'bg-violet-900/30' },
     { label: 'Matches', value: matchCount ?? 0, icon: Users, color: 'text-pink-400', bg: 'bg-pink-900/30' },
   ]
 
@@ -82,15 +83,15 @@ export default async function DashboardPage() {
         >
           <BookOpen className="text-emerald-400 mb-3" size={24} />
           <h3 className="font-semibold mb-1">Mon profil</h3>
-          <p className="text-gray-400 text-sm">Gère tes favoris</p>
+          <p className="text-gray-400 text-sm">Ma collection</p>
         </Link>
       </div>
 
-      {/* CTA if no favorites */}
-      {(favCount ?? 0) === 0 && (
+      {/* CTA if no rated items */}
+      {(ratedCount ?? 0) === 0 && (
         <div className="mt-8 bg-violet-900/20 border border-violet-700/50 rounded-xl p-6 text-center">
-          <p className="text-violet-300 font-medium mb-2">Commence par ajouter tes favoris !</p>
-          <p className="text-gray-400 text-sm mb-4">Plus tu en ajoutes, meilleures seront tes compatibilités.</p>
+          <p className="text-violet-300 font-medium mb-2">Commence par noter des produits !</p>
+          <p className="text-gray-400 text-sm mb-4">Plus tu notes, meilleures seront tes compatibilités.</p>
           <Link
             href="/discover"
             className="inline-block bg-violet-600 hover:bg-violet-500 rounded-lg px-5 py-2.5 font-medium transition-colors"
