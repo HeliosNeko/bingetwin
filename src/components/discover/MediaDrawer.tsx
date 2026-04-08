@@ -13,6 +13,7 @@ interface MediaItem {
   year: string
   overview?: string
   rating?: number
+  genres: string[]
   mediaType: MediaType
 }
 
@@ -88,6 +89,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
       poster_url: item.poster,
       year: item.year,
       rating: value,
+      genres: item.genres ?? [],
     }, { onConflict: 'user_id,media_type,external_id' })
 
     await supabase.rpc('compute_matches', { target_user_id: user.id })
@@ -163,6 +165,17 @@ export default function MediaDrawer({ item, onClose }: Props) {
             {item.overview && (
               <div className="px-5 py-4 border-b border-gray-800">
                 <p className="text-sm text-gray-400 leading-relaxed line-clamp-4">{item.overview}</p>
+              </div>
+            )}
+
+            {/* Genres */}
+            {item.genres && item.genres.length > 0 && (
+              <div className="px-5 py-3 border-b border-gray-800 flex flex-wrap gap-1.5">
+                {item.genres.map(g => (
+                  <span key={g} className="text-xs bg-gray-800 text-gray-400 rounded-full px-2.5 py-1 capitalize">
+                    {g}
+                  </span>
+                ))}
               </div>
             )}
 

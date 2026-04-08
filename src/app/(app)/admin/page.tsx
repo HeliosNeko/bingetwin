@@ -58,6 +58,13 @@ export default async function AdminPage() {
       min: 1,
       max: 10000,
     },
+    genre_representativity_threshold: {
+      label: 'Seuil de représentativité des genres (%)',
+      description: 'Pourcentage minimum de similarité Jensen-Shannon (0-100) entre la distribution des genres des items communs et la distribution globale de chaque utilisateur. Exemple : 70 signifie que les items communs doivent couvrir au moins 70 % de la diversité des genres de chaque profil. Un match est rejeté si l\'un des deux utilisateurs ne passe pas ce seuil, même avec une bonne corrélation de Pearson.',
+      type: 'number',
+      min: 0,
+      max: 100,
+    },
   }
 
   return (

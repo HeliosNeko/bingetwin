@@ -72,7 +72,7 @@ export default async function MatchesPage() {
     <div className="p-6 max-w-2xl mx-auto">
       <h1 className="text-2xl font-bold mb-1">Mes Matches</h1>
       <p className="text-gray-400 text-sm mb-8">
-        Calculé par corrélation de Pearson sur tes notes
+        Pearson sur les notes · Jensen-Shannon sur les genres
       </p>
 
       {(['jumeau', 'cousin'] as const).map(tier => {
@@ -116,10 +116,15 @@ export default async function MatchesPage() {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Score badge */}
+                    {/* Score notes (Pearson) */}
                     <div className={`${cfg.scoreBg} rounded-lg px-3 py-1.5 text-center min-w-[56px]`}>
                       <div className={`text-base font-bold ${cfg.scoreColor}`}>{match.score}%</div>
-                      <div className="text-[10px] text-gray-500 leading-none">similarité</div>
+                      <div className="text-[10px] text-gray-500 leading-none">notes</div>
+                    </div>
+                    {/* Score genres (Jensen-Shannon) */}
+                    <div className="bg-gray-800/60 rounded-lg px-2.5 py-1.5 text-center min-w-[52px]">
+                      <div className="text-sm font-bold text-gray-300">{match.genre_representativity ?? 100}%</div>
+                      <div className="text-[10px] text-gray-600 leading-none">genres</div>
                     </div>
                     <Link
                       href={`/messages/${match.id}`}

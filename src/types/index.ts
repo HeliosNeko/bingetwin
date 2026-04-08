@@ -29,6 +29,7 @@ export interface Match {
   score: number
   common_favorites: number
   match_type: MatchType
+  genre_representativity: number
   created_at: string
   profile?: Profile
 }

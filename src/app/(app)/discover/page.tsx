@@ -15,6 +15,7 @@ export interface MediaItem {
   year: string
   overview?: string
   rating?: number
+  genres: string[]
   mediaType: MediaType
 }
 
