@@ -20,12 +20,15 @@ export interface Favorite {
   created_at: string
 }
 
+export type MatchType = 'jumeau' | 'cousin'
+
 export interface Match {
   id: string
   user1_id: string
   user2_id: string
   score: number
   common_favorites: number
+  match_type: MatchType
   created_at: string
   profile?: Profile
 }
