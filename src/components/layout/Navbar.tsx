@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Film, BookOpen, Users, MessageCircle, LayoutDashboard, LogOut, Search } from 'lucide-react'
+import { Film, Users, MessageCircle, LayoutDashboard, LogOut, Search, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -14,7 +14,7 @@ const navItems = [
   { href: '/messages', icon: MessageCircle, label: 'Messages' },
 ]
 
-export default function Navbar() {
+export default function Navbar({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname()
   const router = useRouter()
 
@@ -49,6 +49,21 @@ export default function Navbar() {
               {label}
             </Link>
           ))}
+
+          {isAdmin && (
+            <Link
+              href="/admin"
+              className={cn(
+                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors mt-2 border-t border-gray-800 pt-3',
+                pathname.startsWith('/admin')
+                  ? 'bg-amber-600 text-white'
+                  : 'text-amber-500 hover:text-amber-300 hover:bg-gray-800'
+              )}
+            >
+              <Settings size={18} />
+              Administration
+            </Link>
+          )}
         </nav>
 
         <button
