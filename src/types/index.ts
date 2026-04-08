@@ -17,6 +17,7 @@ export interface Favorite {
   poster_url: string | null
   year: string | null
   rating: number | null
+  genres: string[]
   created_at: string
 }
 
