@@ -1,7 +1,8 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
-import { Settings, Users, BarChart3, ShieldAlert } from 'lucide-react'
+import { Settings, Users, BarChart3, ShieldAlert, Wrench } from 'lucide-react'
 import SettingForm from '@/components/admin/SettingForm'
+import BackfillButton from '@/components/admin/BackfillButton'
 
 export default async function AdminPage() {
   const supabase = await createClient()
@@ -123,6 +124,18 @@ export default async function AdminPage() {
               </div>
             )
           })}
+        </div>
+      </section>
+
+      {/* Maintenance */}
+      <section className="mt-10">
+        <h2 className="text-lg font-semibold mb-5 flex items-center gap-2">
+          <Wrench size={16} className="text-gray-400" />
+          Maintenance des données
+        </h2>
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <h3 className="font-semibold text-sm mb-1">Backfill des genres manquants</h3>
+          <BackfillButton />
         </div>
       </section>
 

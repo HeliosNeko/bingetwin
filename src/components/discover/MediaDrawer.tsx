@@ -34,19 +34,22 @@ export default function MediaDrawer({ item, onClose }: Props) {
   const [selectedRating, setSelectedRating] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [resolvedGenres, setResolvedGenres] = useState<string[]>([])
 
   // Reset state when item changes
   useEffect(() => {
     if (item) {
       setSelectedRating(null)
       setSaved(false)
+      setResolvedGenres(item.genres ?? [])
 
-      // Load existing rating if any
       async function loadExisting() {
         if (!item) return
         const supabase = createClient()
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return
+
+        // Load existing rating
         const { data } = await supabase
           .from('favorites')
           .select('rating')
@@ -57,6 +60,19 @@ export default function MediaDrawer({ item, onClose }: Props) {
         if (data?.rating) {
           setSelectedRating(data.rating)
           setSaved(true)
+        }
+
+        // Fetch genres from API if not provided by search results
+        if (!item.genres || item.genres.length === 0) {
+          try {
+            const res = await fetch(`/api/genres?type=${item.mediaType}&id=${item.id}`)
+            if (res.ok) {
+              const json = await res.json()
+              if (json.genres?.length > 0) setResolvedGenres(json.genres)
+            }
+          } catch {
+            // silently ignore — genres will just be empty
+          }
         }
       }
       loadExisting()
@@ -89,7 +105,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
       poster_url: item.poster,
       year: item.year,
       rating: value,
-      genres: item.genres ?? [],
+      genres: resolvedGenres,
     }, { onConflict: 'user_id,media_type,external_id' })
 
     await supabase.rpc('compute_matches', { target_user_id: user.id })
@@ -169,9 +185,9 @@ export default function MediaDrawer({ item, onClose }: Props) {
             )}
 
             {/* Genres */}
-            {item.genres && item.genres.length > 0 && (
+            {resolvedGenres.length > 0 && (
               <div className="px-5 py-3 border-b border-gray-800 flex flex-wrap gap-1.5">
-                {item.genres.map(g => (
+                {resolvedGenres.map(g => (
                   <span key={g} className="text-xs bg-gray-800 text-gray-400 rounded-full px-2.5 py-1 capitalize">
                     {g}
                   </span>
