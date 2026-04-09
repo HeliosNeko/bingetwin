@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X, Film, BookOpen, Tv, Star, Check, Loader2 } from 'lucide-react'
+import { X, Film, BookOpen, Tv, Star, Check, Loader2, ExternalLink } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
 import type { MediaType } from '@/types'
@@ -17,12 +17,21 @@ interface MediaItem {
   mediaType: MediaType
 }
 
+interface Details {
+  director?: string
+  creator?: string
+  country?: string
+  runtime?: number
+  seasons?: number
+}
+
+// Ordered: adoré → détesté
 const RATINGS = [
-  { value: 1, label: "J'ai détesté",    emoji: '😤', color: 'hover:bg-red-900/60 hover:border-red-600',     active: 'bg-red-900/60 border-red-600 text-red-300' },
-  { value: 2, label: "Je n'ai pas aimé", emoji: '😕', color: 'hover:bg-orange-900/60 hover:border-orange-600', active: 'bg-orange-900/60 border-orange-600 text-orange-300' },
-  { value: 3, label: "Pas d'avis",       emoji: '😐', color: 'hover:bg-gray-700/60 hover:border-gray-500',    active: 'bg-gray-700/60 border-gray-500 text-gray-300' },
-  { value: 4, label: "J'ai aimé",        emoji: '😊', color: 'hover:bg-violet-900/60 hover:border-violet-500', active: 'bg-violet-900/60 border-violet-500 text-violet-300' },
-  { value: 5, label: "J'ai adoré",       emoji: '🤩', color: 'hover:bg-yellow-900/60 hover:border-yellow-500', active: 'bg-yellow-900/60 border-yellow-500 text-yellow-300' },
+  { value: 5, label: "J'ai adoré",        emoji: '🤩', color: 'hover:bg-yellow-900/60 hover:border-yellow-500', active: 'bg-yellow-900/60 border-yellow-500 text-yellow-300' },
+  { value: 4, label: "J'ai aimé",         emoji: '😊', color: 'hover:bg-violet-900/60 hover:border-violet-500', active: 'bg-violet-900/60 border-violet-500 text-violet-300' },
+  { value: 3, label: "Pas d'avis",        emoji: '😐', color: 'hover:bg-gray-700/60 hover:border-gray-500',     active: 'bg-gray-700/60 border-gray-500 text-gray-300' },
+  { value: 2, label: "Je n'ai pas aimé",  emoji: '😕', color: 'hover:bg-orange-900/60 hover:border-orange-600', active: 'bg-orange-900/60 border-orange-600 text-orange-300' },
+  { value: 1, label: "J'ai détesté",      emoji: '😤', color: 'hover:bg-red-900/60 hover:border-red-600',       active: 'bg-red-900/60 border-red-600 text-red-300' },
 ]
 
 interface Props {
@@ -30,18 +39,25 @@ interface Props {
   onClose: () => void
 }
 
+function tmdbUrl(mediaType: MediaType, id: string) {
+  if (mediaType === 'movie')  return `https://www.themoviedb.org/movie/${id}`
+  if (mediaType === 'series') return `https://www.themoviedb.org/tv/${id}`
+  return `https://openlibrary.org/works/${id}`
+}
+
 export default function MediaDrawer({ item, onClose }: Props) {
   const [selectedRating, setSelectedRating] = useState<number | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [saving, setSaving]                 = useState(false)
+  const [saved, setSaved]                   = useState(false)
   const [resolvedGenres, setResolvedGenres] = useState<string[]>([])
+  const [details, setDetails]               = useState<Details>({})
 
-  // Reset state when item changes
   useEffect(() => {
     if (item) {
       setSelectedRating(null)
       setSaved(false)
       setResolvedGenres(item.genres ?? [])
+      setDetails({})
 
       async function loadExisting() {
         if (!item) return
@@ -62,16 +78,24 @@ export default function MediaDrawer({ item, onClose }: Props) {
           setSaved(true)
         }
 
-        // Fetch genres from API if not provided by search results
-        if (!item.genres || item.genres.length === 0) {
+        // Fetch details (always for movie/series, for book only if genres missing)
+        const needsFetch = item.mediaType !== 'book' || !item.genres || item.genres.length === 0
+        if (needsFetch) {
           try {
             const res = await fetch(`/api/genres?type=${item.mediaType}&id=${item.id}`)
             if (res.ok) {
               const json = await res.json()
               if (json.genres?.length > 0) setResolvedGenres(json.genres)
+              setDetails({
+                director: json.director,
+                creator:  json.creator,
+                country:  json.country,
+                runtime:  json.runtime,
+                seasons:  json.seasons,
+              })
             }
           } catch {
-            // silently ignore — genres will just be empty
+            // silently ignore
           }
         }
       }
@@ -79,7 +103,6 @@ export default function MediaDrawer({ item, onClose }: Props) {
     }
   }, [item])
 
-  // Close on Escape
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose()
@@ -98,14 +121,14 @@ export default function MediaDrawer({ item, onClose }: Props) {
     if (!user) { setSaving(false); return }
 
     await supabase.from('favorites').upsert({
-      user_id: user.id,
+      user_id:    user.id,
       media_type: item.mediaType,
       external_id: item.id,
-      title: item.title,
+      title:      item.title,
       poster_url: item.poster,
-      year: item.year,
-      rating: value,
-      genres: resolvedGenres,
+      year:       item.year,
+      rating:     value,
+      genres:     resolvedGenres,
     }, { onConflict: 'user_id,media_type,external_id' })
 
     await supabase.rpc('compute_matches', { target_user_id: user.id })
@@ -115,6 +138,18 @@ export default function MediaDrawer({ item, onClose }: Props) {
   }
 
   const MediaIcon = item?.mediaType === 'book' ? BookOpen : item?.mediaType === 'series' ? Tv : Film
+
+  // Build subtitle line: director / creator / country / runtime / seasons
+  function buildMeta(): string[] {
+    const parts: string[] = []
+    if (details.director) parts.push(`Réalisé par ${details.director}`)
+    if (details.creator)  parts.push(`Créé par ${details.creator}`)
+    if (details.country)  parts.push(details.country)
+    if (details.runtime)  parts.push(`${details.runtime} min`)
+    if (details.seasons)  parts.push(`${details.seasons} saison${details.seasons > 1 ? 's' : ''}`)
+    return parts
+  }
+  const metaParts = buildMeta()
 
   return (
     <>
@@ -167,12 +202,46 @@ export default function MediaDrawer({ item, onClose }: Props) {
               <div className="flex-1 min-w-0">
                 <h2 className="font-bold text-lg leading-snug">{item.title}</h2>
                 {item.year && <p className="text-gray-400 text-sm mt-1">{item.year}</p>}
+
+                {/* Director / creator / country / runtime */}
+                {metaParts.length > 0 && (
+                  <div className="mt-1.5 space-y-0.5">
+                    {metaParts.map((part, i) => (
+                      <p key={i} className="text-xs text-gray-500">{part}</p>
+                    ))}
+                  </div>
+                )}
+
+                {/* TMDB rating */}
                 {item.rating != null && (
                   <div className="flex items-center gap-1 mt-2">
                     <Star size={13} className="text-yellow-400 fill-yellow-400" />
                     <span className="text-sm text-gray-300">{item.rating.toFixed(1)}</span>
                     <span className="text-xs text-gray-500 ml-1">TMDB</span>
                   </div>
+                )}
+
+                {/* External link */}
+                {item.mediaType !== 'book' ? (
+                  <a
+                    href={tmdbUrl(item.mediaType, item.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 mt-2 text-xs text-gray-500 hover:text-violet-400 transition-colors"
+                  >
+                    <ExternalLink size={11} />
+                    Voir sur TMDB
+                  </a>
+                ) : (
+                  <a
+                    href={tmdbUrl(item.mediaType, item.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 mt-2 text-xs text-gray-500 hover:text-amber-400 transition-colors"
+                  >
+                    <ExternalLink size={11} />
+                    Voir sur Open Library
+                  </a>
                 )}
               </div>
             </div>
@@ -198,7 +267,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
             {/* Rating section */}
             <div className="px-5 py-5">
               <p className="text-sm font-semibold text-gray-300 mb-4">
-                {saved ? 'Ta note' : 'Qu\'en as-tu pensé ?'}
+                {saved ? 'Ta note' : "Qu'en as-tu pensé ?"}
               </p>
 
               <div className="space-y-2">
@@ -215,7 +284,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
                         isSelected ? active : color
                       )}
                     >
-                      <span className="text-xl w-7 text-center">{emoji}</span>
+                      <span className="text-2xl w-8 text-center leading-none">{emoji}</span>
                       <span className="text-sm font-medium flex-1">{label}</span>
                       {isSelected && (
                         saving
@@ -226,7 +295,6 @@ export default function MediaDrawer({ item, onClose }: Props) {
                   )
                 })}
               </div>
-
             </div>
           </div>
         )}
