@@ -227,11 +227,6 @@ export default function MediaDrawer({ item, onClose }: Props) {
                 })}
               </div>
 
-              {saved && !saving && (
-                <p className="text-xs text-emerald-400 mt-4 text-center">
-                  Ajouté à tes favoris ✓
-                </p>
-              )}
             </div>
           </div>
         )}

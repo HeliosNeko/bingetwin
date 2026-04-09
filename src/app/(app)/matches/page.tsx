@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { Users, Dna, Trees } from 'lucide-react'
@@ -28,6 +29,14 @@ const TIER_CONFIG = {
   },
 }
 
+function getAdminClient() {
+  return createAdminClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { persistSession: false } }
+  )
+}
+
 export default async function MatchesPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -43,6 +52,44 @@ export default async function MatchesPage() {
     ...m,
     partner: m.user1_id === user.id ? m.user2 : m.user1,
   }))
+
+  // Compute exact similarity (identical ratings / common rated items)
+  const exactMap = new Map<string, number>()
+  if (all.length > 0) {
+    try {
+      const admin = getAdminClient()
+      const partnerIds = all.map(m => m.partner.id)
+
+      const [{ data: myFavs }, { data: partnerFavs }] = await Promise.all([
+        supabase.from('favorites').select('external_id, media_type, rating').eq('user_id', user.id),
+        admin.from('favorites').select('user_id, external_id, media_type, rating').in('user_id', partnerIds),
+      ])
+
+      const myRatingMap = new Map(
+        (myFavs ?? []).map(f => [`${f.media_type}:${f.external_id}`, f.rating])
+      )
+
+      const byPartner = new Map<string, { external_id: string; media_type: string; rating: number | null }[]>()
+      for (const f of (partnerFavs ?? [])) {
+        if (!byPartner.has(f.user_id)) byPartner.set(f.user_id, [])
+        byPartner.get(f.user_id)!.push(f)
+      }
+
+      for (const [partnerId, favs] of byPartner) {
+        let identical = 0, common = 0
+        for (const f of favs) {
+          const mine = myRatingMap.get(`${f.media_type}:${f.external_id}`)
+          if (mine != null) {
+            common++
+            if (mine === f.rating) identical++
+          }
+        }
+        exactMap.set(partnerId, common > 0 ? Math.round((identical / common) * 100) : 0)
+      }
+    } catch {
+      // silently ignore — exact% will show as —
+    }
+  }
 
   const jumeaux = all.filter(m => m.match_type === 'jumeau')
   const cousins  = all.filter(m => m.match_type === 'cousin')
@@ -83,9 +130,8 @@ export default async function MatchesPage() {
 
         return (
           <section key={tier} className="mb-10">
-            {/* Section header */}
             <div className="flex items-center gap-3 mb-4">
-              <div className={`w-8 h-8 rounded-lg flex items-center justify-center bg-gray-800`}>
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-gray-800">
                 <Icon size={16} className={cfg.iconColor} />
               </div>
               <div>
@@ -98,37 +144,48 @@ export default async function MatchesPage() {
             </div>
 
             <div className="space-y-2">
-              {list.map(match => (
-                <div
-                  key={match.id}
-                  className={`bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between transition-colors ${cfg.cardBorder}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-11 h-11 rounded-full bg-gradient-to-br ${cfg.avatarGradient} flex items-center justify-center font-bold`}>
-                      {match.partner?.username?.[0]?.toUpperCase()}
+              {list.map(match => {
+                const exactPct = exactMap.get(match.partner.id)
+                return (
+                  <Link
+                    key={match.id}
+                    href={`/matches/${match.partner.id}`}
+                    className={`bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between transition-colors cursor-pointer ${cfg.cardBorder}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`w-11 h-11 rounded-full bg-gradient-to-br ${cfg.avatarGradient} flex items-center justify-center font-bold flex-shrink-0`}>
+                        {match.partner?.username?.[0]?.toUpperCase()}
+                      </div>
+                      <div>
+                        <p className="font-semibold text-sm">@{match.partner?.username}</p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {match.common_favorites} note{match.common_favorites > 1 ? 's' : ''} en commun
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-semibold text-sm">@{match.partner?.username}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        {match.common_favorites} note{match.common_favorites > 1 ? 's' : ''} en commun
-                      </p>
-                    </div>
-                  </div>
 
-                  <div className="flex items-center gap-2">
-                    {/* Score notes (Pearson) */}
-                    <div className={`${cfg.scoreBg} rounded-lg px-3 py-1.5 text-center min-w-[56px]`}>
-                      <div className={`text-base font-bold ${cfg.scoreColor}`}>{match.score}%</div>
-                      <div className="text-[10px] text-gray-500 leading-none">notes</div>
+                    <div className="flex items-center gap-2">
+                      {/* Exact match % */}
+                      {exactPct != null && (
+                        <div className="bg-gray-800/60 rounded-lg px-2.5 py-1.5 text-center min-w-[52px]">
+                          <div className="text-sm font-bold text-gray-300">{exactPct}%</div>
+                          <div className="text-[10px] text-gray-600 leading-none">exact</div>
+                        </div>
+                      )}
+                      {/* Score notes (Pearson) */}
+                      <div className={`${cfg.scoreBg} rounded-lg px-3 py-1.5 text-center min-w-[56px]`}>
+                        <div className={`text-base font-bold ${cfg.scoreColor}`}>{match.score}%</div>
+                        <div className="text-[10px] text-gray-500 leading-none">Pearson</div>
+                      </div>
+                      {/* Score genres (Jensen-Shannon) */}
+                      <div className="bg-gray-800/60 rounded-lg px-2.5 py-1.5 text-center min-w-[52px]">
+                        <div className="text-sm font-bold text-gray-300">{match.genre_representativity ?? 100}%</div>
+                        <div className="text-[10px] text-gray-600 leading-none">genres</div>
+                      </div>
                     </div>
-                    {/* Score genres (Jensen-Shannon) */}
-                    <div className="bg-gray-800/60 rounded-lg px-2.5 py-1.5 text-center min-w-[52px]">
-                      <div className="text-sm font-bold text-gray-300">{match.genre_representativity ?? 100}%</div>
-                      <div className="text-[10px] text-gray-600 leading-none">genres</div>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                  </Link>
+                )
+              })}
             </div>
           </section>
         )
