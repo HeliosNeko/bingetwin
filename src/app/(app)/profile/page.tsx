@@ -7,7 +7,7 @@ import RatingProgress from '@/components/profile/RatingProgress'
 import type { Favorite } from '@/types'
 
 const RATING_EMOJI: Record<number, string> = {
-  5: '🤩', 4: '😊', 3: '😐', 2: '😕', 1: '😤',
+  5: '😍', 4: '🙂', 3: '😶', 2: '😬', 1: '🤮',
 }
 const MEDIA_BADGE: Record<string, { label: string; color: string }> = {
   movie:  { label: 'Film',   color: 'bg-violet-900/80 text-violet-300' },

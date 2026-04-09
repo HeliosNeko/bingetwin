@@ -6,7 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 
 const EMOJIS: Record<number, string> = {
-  5: '🤩', 4: '😊', 3: '😐', 2: '😕', 1: '😤',
+  5: '😍', 4: '🙂', 3: '😶', 2: '😬', 1: '🤮',
 }
 const LABELS: Record<number, string> = {
   5: "J'ai adoré", 4: "J'ai aimé", 3: "Pas d'avis", 2: "Je n'ai pas aimé", 1: "J'ai détesté",
@@ -51,22 +51,24 @@ export default function InlineRatingPicker({
       <button
         onClick={() => setOpen(o => !o)}
         disabled={saving}
-        className="text-2xl leading-none hover:scale-110 transition-transform disabled:opacity-50"
+        className="leading-none hover:scale-110 transition-transform disabled:opacity-50"
+        style={{ fontSize: '32px' }}
         title="Modifier la note"
       >
         {saving
-          ? <Loader2 size={18} className="animate-spin text-gray-400" />
+          ? <Loader2 size={24} className="animate-spin text-gray-400" />
           : EMOJIS[rating]}
       </button>
 
       {open && (
-        <div className="absolute right-0 bottom-full mb-2 bg-gray-800 border border-gray-700 rounded-xl p-2 flex gap-1 z-20 shadow-xl">
+        <div className="absolute right-0 bottom-full mb-2 bg-gray-800 border border-gray-700 rounded-xl p-3 flex gap-4 z-20 shadow-xl">
           {[5, 4, 3, 2, 1].map(v => (
             <button
               key={v}
               onClick={() => changeRating(v)}
               title={LABELS[v]}
-              className={`text-xl p-1.5 rounded-lg hover:bg-gray-700 transition-colors ${v === rating ? 'ring-1 ring-violet-500 bg-gray-700' : ''}`}
+              style={{ fontSize: '32px' }}
+              className={`leading-none p-1 rounded-lg hover:bg-gray-700 transition-colors ${v === rating ? 'ring-1 ring-violet-500 bg-gray-700' : ''}`}
             >
               {EMOJIS[v]}
             </button>

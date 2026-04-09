@@ -27,11 +27,11 @@ interface Details {
 
 // Ordered: adoré → détesté
 const RATINGS = [
-  { value: 5, label: "J'ai adoré",        emoji: '🤩', color: 'hover:bg-yellow-900/60 hover:border-yellow-500', active: 'bg-yellow-900/60 border-yellow-500 text-yellow-300' },
-  { value: 4, label: "J'ai aimé",         emoji: '😊', color: 'hover:bg-violet-900/60 hover:border-violet-500', active: 'bg-violet-900/60 border-violet-500 text-violet-300' },
-  { value: 3, label: "Pas d'avis",        emoji: '😐', color: 'hover:bg-gray-700/60 hover:border-gray-500',     active: 'bg-gray-700/60 border-gray-500 text-gray-300' },
-  { value: 2, label: "Je n'ai pas aimé",  emoji: '😕', color: 'hover:bg-orange-900/60 hover:border-orange-600', active: 'bg-orange-900/60 border-orange-600 text-orange-300' },
-  { value: 1, label: "J'ai détesté",      emoji: '😤', color: 'hover:bg-red-900/60 hover:border-red-600',       active: 'bg-red-900/60 border-red-600 text-red-300' },
+  { value: 5, label: "J'ai adoré",        emoji: '😍', color: 'hover:bg-yellow-900/60 hover:border-yellow-500', active: 'bg-yellow-900/60 border-yellow-500 text-yellow-300' },
+  { value: 4, label: "J'ai aimé",         emoji: '🙂', color: 'hover:bg-violet-900/60 hover:border-violet-500', active: 'bg-violet-900/60 border-violet-500 text-violet-300' },
+  { value: 3, label: "Pas d'avis",        emoji: '😶', color: 'hover:bg-gray-700/60 hover:border-gray-500',     active: 'bg-gray-700/60 border-gray-500 text-gray-300' },
+  { value: 2, label: "Je n'ai pas aimé",  emoji: '😬', color: 'hover:bg-orange-900/60 hover:border-orange-600', active: 'bg-orange-900/60 border-orange-600 text-orange-300' },
+  { value: 1, label: "J'ai détesté",      emoji: '🤮', color: 'hover:bg-red-900/60 hover:border-red-600',       active: 'bg-red-900/60 border-red-600 text-red-300' },
 ]
 
 interface Props {
@@ -270,7 +270,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
                 {saved ? 'Ta note' : "Qu'en as-tu pensé ?"}
               </p>
 
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {RATINGS.map(({ value, label, emoji, color, active }) => {
                   const isSelected = selectedRating === value
                   return (
@@ -284,7 +284,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
                         isSelected ? active : color
                       )}
                     >
-                      <span className="text-2xl w-8 text-center leading-none">{emoji}</span>
+                      <span className="w-10 text-center leading-none" style={{ fontSize: '32px' }}>{emoji}</span>
                       <span className="text-sm font-medium flex-1">{label}</span>
                       {isSelected && (
                         saving
