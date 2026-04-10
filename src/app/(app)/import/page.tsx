@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Upload, Check, Loader2, X, ArrowLeft, Trash2, Users } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
@@ -256,6 +256,33 @@ function normalizeStr(s: string): string {
 // La recherche TMDB/OL se fait côté SERVEUR pour éviter tout problème de cache
 // navigateur ou de CORS. L'API route /api/import est toujours fraîche.
 
+// ── LocalStorage cache — persistance de la liste importée ────────────────────
+
+interface ImportCache {
+  items: MatchedItem[]
+  totalParsed: number
+  notFound: string[]
+  savedAt: number  // timestamp ms
+}
+
+const cacheKey = (src: Source) => `bingetwin_import_${src}`
+
+function saveCache(src: Source, data: ImportCache) {
+  try { localStorage.setItem(cacheKey(src), JSON.stringify(data)) } catch { /* ignore quota */ }
+}
+
+function loadCache(src: Source): ImportCache | null {
+  try {
+    const raw = localStorage.getItem(cacheKey(src))
+    if (!raw) return null
+    return JSON.parse(raw) as ImportCache
+  } catch { return null }
+}
+
+function clearCache(src: Source) {
+  try { localStorage.removeItem(cacheKey(src)) } catch { /* ignore */ }
+}
+
 async function searchBatch(titles: ParsedItem[]): Promise<{ matched: MatchedItem[]; notFound: string[] }> {
   const res = await fetch('/api/import', {
     method: 'POST',
@@ -291,8 +318,20 @@ export default function ImportPage() {
   // Profils Netflix multi-comptes
   const [profiles, setProfiles]       = useState<string[]>([])
   const [pendingText, setPendingText] = useState('')
+  // Persistance : nb de titres sauvegardés par source (lu depuis localStorage au montage)
+  const [savedCounts, setSavedCounts] = useState<Partial<Record<Source, number>>>({})
   // one hidden input per source so re-uploads always trigger onChange
   const fileRefs                      = useRef<Record<Source, HTMLInputElement | null>>({ netflix: null, letterboxd: null, imdb: null, goodreads: null })
+
+  // Lecture du cache au montage de la page
+  useEffect(() => {
+    const counts: Partial<Record<Source, number>> = {}
+    for (const src of ['netflix', 'letterboxd', 'imdb', 'goodreads'] as Source[]) {
+      const c = loadCache(src)
+      if (c) counts[src] = c.items.length
+    }
+    setSavedCounts(counts)
+  }, [])
 
   // ── File processing ──────────────────────────────────────────────────────
 
@@ -357,17 +396,33 @@ export default function ImportPage() {
     }
 
     console.log('[Import] Reconnus :', results.length, '/ Non trouvés :', failed.length)
-    console.log('[Import] 10 premiers non trouvés :', failed.slice(0, 10))
     setMatched(results)
     setNotFoundTitles(failed)
 
-    const allUnrated = results.every(m => m.userRating === null)
-    if (allUnrated && results.length > 0) {
-      setQuickIndex(0)
-      setStep('quickrate')
-    } else {
-      setStep('review')
-    }
+    // Sauvegarde dans le cache local pour ne pas avoir à re-uploader le CSV
+    saveCache(src, { items: results, totalParsed: parsed.length, notFound: failed, savedAt: Date.now() })
+    setSavedCounts(prev => ({ ...prev, [src]: results.length }))
+
+    setStep('review')
+  }
+
+  // Charger une session sauvegardée sans re-uploader le CSV
+  function loadFromCache(src: Source) {
+    const c = loadCache(src)
+    if (!c) return
+    setSource(src)
+    setMatched(c.items)
+    setNotFoundTitles(c.notFound)
+    setTotalParsed(c.totalParsed)
+    setParsedTitles([])
+    setDebugLines([])
+    setStep('review')
+  }
+
+  // Réinitialiser une source (efface le cache + revient à l'upload)
+  function resetSource(src: Source) {
+    clearCache(src)
+    setSavedCounts(prev => { const n = { ...prev }; delete n[src]; return n })
   }
 
   function setRating(index: number, rating: number | null) {
@@ -419,6 +474,11 @@ export default function ImportPage() {
     setSavedCount(toSave.length)
     setTotalRated(count ?? 0)
     setThreshold(Number(settingRow?.value ?? 500))
+    // Cache effacé après sauvegarde réussie en base
+    if (source) {
+      clearCache(source)
+      setSavedCounts(prev => { const n = { ...prev }; delete n[source!]; return n })
+    }
     setStep('done')
   }
 
@@ -432,33 +492,69 @@ export default function ImportPage() {
       </p>
 
       <div className="grid sm:grid-cols-2 gap-4">
-        {(Object.entries(SOURCES) as [Source, typeof SOURCES[Source]][]).map(([key, cfg]) => (
-          <div
-            key={key}
-            className={`p-5 bg-gray-900 border rounded-xl transition-all ${cfg.color} border-gray-800`}
-          >
-            <div className="text-3xl mb-3">{cfg.emoji}</div>
-            <h2 className="font-semibold mb-2">{cfg.name}</h2>
-            <ol className="list-none space-y-0.5 mb-5">
-              {cfg.instructions.map((line, i) => (
-                <li key={i} className="text-xs text-gray-500">{line}</li>
-              ))}
-            </ol>
+        {(Object.entries(SOURCES) as [Source, typeof SOURCES[Source]][]).map(([key, cfg]) => {
+          const saved = savedCounts[key]
+          return (
+            <div
+              key={key}
+              className={`p-5 bg-gray-900 border rounded-xl transition-all ${cfg.color} border-gray-800`}
+            >
+              <div className="flex items-start justify-between mb-3">
+                <span className="text-3xl">{cfg.emoji}</span>
+                {saved != null && (
+                  <span className="text-xs bg-violet-900/50 text-violet-300 border border-violet-700/50 px-2 py-0.5 rounded-full">
+                    {saved} titres sauvegardés
+                  </span>
+                )}
+              </div>
+              <h2 className="font-semibold mb-2">{cfg.name}</h2>
 
-            {/* Upload button — directly on the card */}
-            <label className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium cursor-pointer transition-colors w-fit">
-              <Upload size={14} />
-              Choisir le fichier CSV
-              <input
-                ref={el => { fileRefs.current[key] = el }}
-                type="file"
-                accept=".csv"
-                className="hidden"
-                onChange={e => handleFile(e, key)}
-              />
-            </label>
-          </div>
-        ))}
+              {saved != null ? (
+                /* Source avec données sauvegardées */
+                <div className="space-y-2">
+                  <button
+                    onClick={() => loadFromCache(key)}
+                    className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium transition-colors w-full justify-center"
+                  >
+                    <Check size={14} />
+                    Continuer ({saved} titres)
+                  </button>
+                  <label className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-400 hover:text-white cursor-pointer transition-colors w-full justify-center">
+                    <Upload size={13} />
+                    Réimporter un nouveau CSV
+                    <input
+                      ref={el => { fileRefs.current[key] = el }}
+                      type="file"
+                      accept=".csv"
+                      className="hidden"
+                      onChange={e => { resetSource(key); handleFile(e, key) }}
+                    />
+                  </label>
+                </div>
+              ) : (
+                /* Source vierge */
+                <>
+                  <ol className="list-none space-y-0.5 mb-4">
+                    {cfg.instructions.map((line, i) => (
+                      <li key={i} className="text-xs text-gray-500">{line}</li>
+                    ))}
+                  </ol>
+                  <label className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium cursor-pointer transition-colors w-fit">
+                    <Upload size={14} />
+                    Choisir le fichier CSV
+                    <input
+                      ref={el => { fileRefs.current[key] = el }}
+                      type="file"
+                      accept=".csv"
+                      className="hidden"
+                      onChange={e => handleFile(e, key)}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -553,7 +649,7 @@ export default function ImportPage() {
 
         {/* Emoji buttons */}
         <div className="flex justify-center gap-4 mb-5">
-          {[5, 4, 3, 2, 1].map(v => (
+          {[1, 2, 3, 4, 5].map(v => (
             <button
               key={v}
               onClick={() => quickRate(v)}
@@ -589,7 +685,19 @@ export default function ImportPage() {
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div>
-            <h2 className="text-xl font-bold">Confirme ta sélection</h2>
+            <div className="flex items-center gap-3 mb-0.5">
+              <h2 className="text-xl font-bold">Confirme ta sélection</h2>
+              {source && (
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 cursor-pointer transition-colors">
+                  <Upload size={12} />
+                  Réimporter
+                  <input
+                    type="file" accept=".csv" className="hidden"
+                    onChange={e => { if (source) resetSource(source); handleFile(e, source!) }}
+                  />
+                </label>
+              )}
+            </div>
             <p className="text-gray-400 text-sm mt-0.5">
               {totalParsed > 0 && (
                 <span className={matched.length / totalParsed >= 0.8 ? 'text-emerald-400' : 'text-amber-400'}>
@@ -702,7 +810,7 @@ export default function ImportPage() {
               {/* Rating row */}
               <div className="flex items-center gap-2 flex-shrink-0">
                 <div className="flex gap-2">
-                  {[5, 4, 3, 2, 1].map(v => (
+                  {[1, 2, 3, 4, 5].map(v => (
                     <button
                       key={v}
                       onClick={() => setRating(idx, v)}
