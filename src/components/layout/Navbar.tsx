@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Film, Users, LayoutDashboard, LogOut, Search, Settings } from 'lucide-react'
+import { Film, Users, LayoutDashboard, LogOut, Search, Settings, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -11,6 +11,7 @@ const navItems = [
   { href: '/discover', icon: Search, label: 'Découvrir' },
   { href: '/profile', icon: Film, label: 'Mon profil' },
   { href: '/matches', icon: Users, label: 'Matches' },
+  { href: '/import', icon: Upload, label: 'Importer' },
 ]
 
 export default function Navbar({ isAdmin = false }: { isAdmin?: boolean }) {
