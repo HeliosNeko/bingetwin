@@ -266,17 +266,19 @@ export default function ImportPage() {
   const [savedCount, setSavedCount]   = useState(0)
   const [totalRated, setTotalRated]   = useState(0)
   const [threshold, setThreshold]     = useState(500)
-  const fileRef                       = useRef<HTMLInputElement>(null)
+  // one hidden input per source so re-uploads always trigger onChange
+  const fileRefs                      = useRef<Record<Source, HTMLInputElement | null>>({ netflix: null, letterboxd: null, imdb: null, goodreads: null })
 
   // ── File processing ──────────────────────────────────────────────────────
 
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>, src: Source) {
     const file = e.target.files?.[0]
-    if (!file || !source) return
-    e.target.value = '' // allow re-upload
+    if (!file) return
+    e.target.value = '' // allow re-upload of same file
+    setSource(src)
 
     const text = await file.text()
-    const parsed = SOURCES[source].parse(text)
+    const parsed = SOURCES[src].parse(text)
 
     if (parsed.length === 0) {
       alert('Aucun titre trouvé dans ce fichier. Vérifie le format CSV.')
@@ -365,45 +367,38 @@ export default function ImportPage() {
     <div className="p-6 max-w-3xl mx-auto">
       <h1 className="text-2xl font-bold mb-1">Importer mon historique</h1>
       <p className="text-gray-400 text-sm mb-8">
-        Importe tes films, séries et livres depuis une plateforme pour démarrer plus vite.
+        Exporte ton historique depuis ta plateforme, puis charge le fichier CSV ici.
       </p>
 
-      <div className="grid sm:grid-cols-2 gap-4 mb-6">
-        {(Object.entries(SOURCES) as [Source, typeof SOURCES[Source]][]).map(([key, cfg]) => {
-          const active = source === key
-          return (
-            <button
-              key={key}
-              onClick={() => setSource(active ? null : key)}
-              className={`text-left p-5 bg-gray-900 border rounded-xl transition-all ${active ? cfg.selected : cfg.color + ' border-gray-800'}`}
-            >
-              <div className="text-3xl mb-3">{cfg.emoji}</div>
-              <h2 className="font-semibold mb-2">{cfg.name}</h2>
-              <ol className="list-none space-y-0.5">
-                {cfg.instructions.map((line, i) => (
-                  <li key={i} className="text-xs text-gray-500">{line}</li>
-                ))}
-              </ol>
-            </button>
-          )
-        })}
-      </div>
-
-      {source && (
-        <div className="p-5 bg-gray-900 border border-violet-800/40 rounded-xl">
-          <p className="text-sm text-gray-300 mb-4">
-            Source sélectionnée : <span className="font-semibold text-white">{SOURCES[source].name}</span>
-          </p>
-          <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} className="hidden" />
-          <button
-            onClick={() => fileRef.current?.click()}
-            className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium transition-colors"
+      <div className="grid sm:grid-cols-2 gap-4">
+        {(Object.entries(SOURCES) as [Source, typeof SOURCES[Source]][]).map(([key, cfg]) => (
+          <div
+            key={key}
+            className={`p-5 bg-gray-900 border rounded-xl transition-all ${cfg.color} border-gray-800`}
           >
-            <Upload size={16} />
-            Choisir le fichier CSV
-          </button>
-        </div>
-      )}
+            <div className="text-3xl mb-3">{cfg.emoji}</div>
+            <h2 className="font-semibold mb-2">{cfg.name}</h2>
+            <ol className="list-none space-y-0.5 mb-5">
+              {cfg.instructions.map((line, i) => (
+                <li key={i} className="text-xs text-gray-500">{line}</li>
+              ))}
+            </ol>
+
+            {/* Upload button — directly on the card */}
+            <label className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium cursor-pointer transition-colors w-fit">
+              <Upload size={14} />
+              Choisir le fichier CSV
+              <input
+                ref={el => { fileRefs.current[key] = el }}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={e => handleFile(e, key)}
+              />
+            </label>
+          </div>
+        ))}
+      </div>
     </div>
   )
 
