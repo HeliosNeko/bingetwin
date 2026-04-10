@@ -108,7 +108,7 @@ const SOURCES: Record<Source, {
       // Diagnostic: log raw column names + first 5 rows
       if (rows.length > 0) {
         console.log('[Netflix CSV] Colonnes détectées :', Object.keys(rows[0]))
-        console.log('[Netflix CSV] 5 premières lignes :', rows.slice(0, 5))
+        console.log('[Netflix CSV] 5 premières lignes brutes :', rows.slice(0, 5))
       }
 
       const seen = new Set<string>()
@@ -119,25 +119,27 @@ const SOURCES: Record<Source, {
         const raw = row['Title'] ?? row['Titre'] ?? row['title'] ?? row['titre'] ?? ''
         if (!raw) continue
 
-        let cleanTitle = raw.trim()
+        // Normalise les espaces insécables (\u00a0) que Netflix insère avant les numéros
+        const norm = raw.replace(/\u00a0/g, ' ').trim()
+
+        let cleanTitle = norm
         let isSeries = false
 
-        // 1. Format français avec espaces : "Show : Saison 2 : Épisode 5"
-        const frM = raw.match(/^(.+?)\s+:\s+(?:Saison|Partie|Épisode|Episode|Chapitre)\b/i)
-        // 2. Format anglais sans espaces : "Show: Season 2: Episode 5"
-        const enM = raw.match(/^(.+?):\s*(?:Season|Part|Episode|Chapter|Series|Volume)\b/i)
-        // 3. Numéro de saison seul : "Show : S01" ou "Show: S01"
-        const sNum = raw.match(/^(.+?)\s*:\s*S\d+/i)
+        // 1. Titre avec mot-clé de saison/épisode (FR ou EN) après ":" avec ou sans espace
+        //    Ex: "Black Mirror: Saison 7: ..." / "Show: Season 1: ..."
+        const seasonM = norm.match(/^(.+?)\s*:\s*(?:Saison|Partie|Épisode|Episode|Chapitre|Season|Part|Chapter|Volume|S\d{1,2}\b)/i)
+        // 2. Format "Show : Sous-titre : Épisode" avec espaces autour du premier ":"
+        const spaceColonM = norm.match(/^(.+?)\s+:\s+/)
 
-        if (frM)      { cleanTitle = frM[1].trim();  isSeries = true }
-        else if (enM) { cleanTitle = enM[1].trim();  isSeries = true }
-        else if (sNum){ cleanTitle = sNum[1].trim(); isSeries = true }
-        else if (raw.includes(' : ')) {
-          // Fallback : tout ce qui contient " : " (séparateur Netflix français)
-          // → prendre uniquement ce qui est avant le premier " : "
-          cleanTitle = raw.split(' : ')[0].trim()
+        if (seasonM) {
+          cleanTitle = seasonM[1].trim()
+          isSeries = true
+        } else if (spaceColonM) {
+          cleanTitle = spaceColonM[1].trim()
           isSeries = true
         }
+        // Sinon : titre complet gardé tel quel
+        // (ex: "Taylor Tomlinson: Prodigal Daughter" = spécial standup → titre réel sur TMDB)
 
         const key = cleanTitle.toLowerCase()
         if (seen.has(key)) continue
@@ -146,7 +148,7 @@ const SOURCES: Record<Source, {
       }
 
       console.log('[Netflix] Titres uniques extraits :', out.length,
-        '— exemples :', out.slice(0, 8).map(o => `"${o.cleanTitle}" (${o.preferredType})`))
+        '— 20 premiers :', out.slice(0, 20).map(o => `"${o.cleanTitle}" (${o.preferredType})`))
       return out.slice(0, 300)
     },
   },
@@ -284,8 +286,21 @@ async function findItem(parsed: ParsedItem): Promise<MatchedItem | null> {
   } else {
     const primary  = parsed.preferredType === 'series' ? 'tv'    : 'movie'
     const fallback = parsed.preferredType === 'series' ? 'movie' : 'tv'
+
+    // Essai 1 : titre nettoyé, type préféré
     found = await findTMDB(primary,  parsed.cleanTitle, parsed.year || undefined)
+    // Essai 2 : titre nettoyé, type alternatif
     if (!found) found = await findTMDB(fallback, parsed.cleanTitle, parsed.year || undefined)
+
+    // Essai 3 : si le titre contient ': ', essayer la partie avant le premier ': ' comme série
+    // (ex: "Big Mistakes: Je ferai TOUT pour survivre" → "Big Mistakes")
+    if (!found && parsed.cleanTitle.includes(': ')) {
+      const short = parsed.cleanTitle.split(': ')[0].trim()
+      if (short && short !== parsed.cleanTitle) {
+        found = await findTMDB('tv',    short, undefined)
+        if (!found) found = await findTMDB('movie', short, undefined)
+      }
+    }
   }
 
   if (!found) return null
@@ -308,6 +323,7 @@ export default function ImportPage() {
   const [matched, setMatched]         = useState<MatchedItem[]>([])
   const [notFoundTitles, setNotFoundTitles] = useState<string[]>([])
   const [debugLines, setDebugLines]         = useState<string[]>([])
+  const [parsedTitles, setParsedTitles]     = useState<string[]>([])
   const [quickIndex, setQuickIndex]   = useState(0)
   const [savedCount, setSavedCount]   = useState(0)
   const [totalRated, setTotalRated]   = useState(0)
@@ -325,12 +341,14 @@ export default function ImportPage() {
 
     const text = await file.text()
 
-    // Store first 5 raw lines for diagnostic
-    const rawLines = text.split(/\r?\n/).slice(0, 5).filter(l => l.trim())
+    // Store first 20 raw lines for diagnostic
+    const rawLines = text.split(/\r?\n/).slice(0, 20).filter(l => l.trim())
     setDebugLines(rawLines)
-    console.log('[CSV] 5 premières lignes brutes :', rawLines)
+    console.log('[CSV] 20 premières lignes brutes :', rawLines)
 
     const parsed = SOURCES[src].parse(text)
+    // Store first 20 parsed titles for diagnostic display
+    setParsedTitles(parsed.slice(0, 20).map(p => `${p.cleanTitle} [${p.preferredType}]`))
 
     if (parsed.length === 0) {
       alert('Aucun titre trouvé dans ce fichier. Vérifie le format CSV et les noms de colonnes (voir console).')
@@ -584,19 +602,30 @@ export default function ImportPage() {
           </details>
         )}
 
-        {/* Debug: raw CSV lines */}
-        {debugLines.length > 0 && (
-          <details className="mb-4">
-            <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-400 transition-colors list-none">
-              🔍 Format CSV détecté (5 premières lignes)
-            </summary>
-            <div className="mt-2 bg-gray-950 border border-gray-800 rounded-lg p-3 space-y-1">
-              {debugLines.map((line, i) => (
-                <p key={i} className="text-xs text-gray-500 font-mono truncate">{line}</p>
-              ))}
-            </div>
-          </details>
-        )}
+        {/* Debug: raw CSV lines + parsed titles */}
+        <details className="mb-4">
+          <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-400 transition-colors list-none">
+            🔍 Diagnostic CSV (20 premières lignes brutes + titres extraits)
+          </summary>
+          <div className="mt-2 space-y-3">
+            {debugLines.length > 0 && (
+              <div className="bg-gray-950 border border-gray-800 rounded-lg p-3 space-y-1">
+                <p className="text-xs text-gray-600 mb-1 font-semibold">Lignes brutes CSV :</p>
+                {debugLines.map((line, i) => (
+                  <p key={i} className="text-xs text-gray-500 font-mono truncate">{line}</p>
+                ))}
+              </div>
+            )}
+            {parsedTitles.length > 0 && (
+              <div className="bg-gray-950 border border-gray-800 rounded-lg p-3 space-y-1">
+                <p className="text-xs text-gray-600 mb-1 font-semibold">Titres extraits (20 premiers) :</p>
+                {parsedTitles.map((t, i) => (
+                  <p key={i} className="text-xs text-gray-500 font-mono">{i + 1}. {t}</p>
+                ))}
+              </div>
+            )}
+          </div>
+        </details>
 
         {/* Quick rate mode CTA */}
         {unratedCount > 0 && (
@@ -699,9 +728,16 @@ export default function ImportPage() {
             produit{savedCount > 1 ? 's' : ''} importé{savedCount > 1 ? 's' : ''} avec succès
           </p>
           {notFoundTitles.length > 0 && (
-            <p className="text-gray-500 text-sm mt-1">
-              {notFoundTitles.length} titre{notFoundTitles.length > 1 ? 's' : ''} non reconnu{notFoundTitles.length > 1 ? 's' : ''} (introuvable sur TMDB/OL)
-            </p>
+            <details className="mt-2 text-left">
+              <summary className="text-gray-500 text-sm cursor-pointer hover:text-gray-300 transition-colors list-none">
+                {notFoundTitles.length} titre{notFoundTitles.length > 1 ? 's' : ''} non reconnu{notFoundTitles.length > 1 ? 's' : ''} ▾
+              </summary>
+              <div className="mt-2 bg-gray-900/60 border border-gray-800 rounded-xl p-3 space-y-1 max-h-48 overflow-y-auto">
+                {notFoundTitles.map((t, i) => (
+                  <p key={i} className="text-xs text-gray-500 font-mono">— {t}</p>
+                ))}
+              </div>
+            </details>
           )}
         </div>
 
