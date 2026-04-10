@@ -24,14 +24,50 @@ function mapGenreIds(ids: number[], map: Record<number, string>): string[] {
   return ids.map(id => map[id]).filter(Boolean)
 }
 
+function toYear(dateStr: unknown): number {
+  const y = parseInt(String(dateStr ?? '').slice(0, 4), 10)
+  return isNaN(y) ? 0 : y
+}
+
+function tmdbSort(items: Record<string, unknown>[]): Record<string, unknown>[] {
+  const isNotable = (item: Record<string, unknown>) =>
+    (item.vote_average as number) >= 7.5 ||
+    (item.vote_count  as number) >= 1000 ||
+    (item.popularity  as number) >= 50
+
+  // Find the single most recent item (highest year, then highest vote_count as tiebreaker)
+  const sorted = [...items].sort((a, b) => {
+    const ya = toYear(a.release_date ?? a.first_air_date)
+    const yb = toYear(b.release_date ?? b.first_air_date)
+    if (yb !== ya) return yb - ya
+    return (b.vote_count as number) - (a.vote_count as number)
+  })
+
+  const [first, ...rest] = sorted
+
+  const notable = rest.filter(isNotable).sort((a, b) => {
+    const ya = toYear(a.release_date ?? a.first_air_date)
+    const yb = toYear(b.release_date ?? b.first_air_date)
+    return yb - ya
+  })
+  const others = rest.filter(i => !isNotable(i)).sort((a, b) => {
+    const ya = toYear(a.release_date ?? a.first_air_date)
+    const yb = toYear(b.release_date ?? b.first_air_date)
+    return yb - ya
+  })
+
+  return first ? [first, ...notable, ...others] : []
+}
+
 async function searchTMDB(type: 'movie' | 'tv', query: string) {
   const url = `${TMDB_BASE}/search/${type}?api_key=${TMDB_API_KEY}&language=fr-FR&query=${encodeURIComponent(query)}`
   const res = await fetch(url)
   const data = await res.json()
 
   const genreMap = type === 'movie' ? MOVIE_GENRES : TV_GENRES
+  const raw: Record<string, unknown>[] = (data.results ?? []).slice(0, 20)
 
-  return (data.results ?? []).slice(0, 20).map((item: Record<string, unknown>) => ({
+  return tmdbSort(raw).map(item => ({
     id: String(item.id),
     title: (item.title ?? item.name) as string,
     poster: item.poster_path ? `${IMG_BASE}${item.poster_path}` : null,
@@ -48,7 +84,10 @@ async function searchBooks(query: string) {
   )
   const data = await res.json()
 
-  return (data.docs ?? []).slice(0, 20).map((book: Record<string, unknown>) => {
+  const docs: Record<string, unknown>[] = (data.docs ?? []).slice(0, 20)
+  docs.sort((a, b) => (b.first_publish_year as number ?? 0) - (a.first_publish_year as number ?? 0))
+
+  return docs.map((book: Record<string, unknown>) => {
     const subjects = (book.subject as string[] | undefined) ?? []
     // On prend les 5 premiers sujets, normalisés en minuscules
     const genres = subjects.slice(0, 5).map((s: string) => s.toLowerCase())
