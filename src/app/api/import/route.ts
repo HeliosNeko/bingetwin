@@ -121,6 +121,20 @@ async function findItem(parsed: ParsedItem): Promise<MatchedItem | null> {
 
 // ── Route handler ─────────────────────────────────────────────────────────────
 
+export async function GET() {
+  // Debug endpoint: vérifie la clé TMDB et fait un appel test
+  const keyPreview = TMDB_KEY ? `${TMDB_KEY.slice(0, 4)}...${TMDB_KEY.slice(-4)}` : 'UNDEFINED'
+  let tmdbTest: unknown = null
+  try {
+    const res = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_KEY}&query=Nosferatu&language=fr-FR`)
+    const data = await res.json()
+    tmdbTest = { status: res.status, total: data.total_results, first: data.results?.[0]?.title }
+  } catch (e) {
+    tmdbTest = { error: String(e) }
+  }
+  return NextResponse.json({ key: keyPreview, tmdbTest })
+}
+
 export async function POST(request: NextRequest) {
   const { titles }: { titles: ParsedItem[] } = await request.json()
 
