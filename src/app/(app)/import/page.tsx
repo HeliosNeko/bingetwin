@@ -1,14 +1,14 @@
 'use client'
 
 import { useState, useRef } from 'react'
-import { Upload, Check, Loader2, X, ArrowLeft } from 'lucide-react'
+import { Upload, Check, Loader2, X, ArrowLeft, Trash2, Users } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Source = 'netflix' | 'letterboxd' | 'imdb' | 'goodreads'
-type Step = 'select' | 'searching' | 'review' | 'quickrate' | 'saving' | 'done'
+type Step = 'select' | 'profile' | 'searching' | 'review' | 'quickrate' | 'saving' | 'done'
 
 interface ParsedItem {
   cleanTitle: string
@@ -91,7 +91,8 @@ function fromGoodreads(r: string): number | null {
 const SOURCES: Record<Source, {
   name: string; emoji: string; color: string; selected: string
   instructions: string[]
-  parse(text: string): ParsedItem[]
+  parse(text: string, profile?: string): ParsedItem[]
+  parseProfiles?(text: string): string[]
 }> = {
   netflix: {
     name: 'Netflix', emoji: '🎬',
@@ -102,52 +103,75 @@ const SOURCES: Record<Source, {
       '→ Historique de visionnage',
       '→ Télécharger tout',
     ],
-    parse(text) {
+    // Retourne les profils distincts si le CSV multi-profils (colonne "Profile Name")
+    parseProfiles(text) {
+      const rows = csvToObjects(text)
+      const col = Object.keys(rows[0] ?? {}).find(k =>
+        k.toLowerCase().includes('profile') || k.toLowerCase().includes('profil')
+      )
+      if (!col) return []
+      return [...new Set(rows.map(r => r[col]).filter(Boolean))] as string[]
+    },
+    parse(text, profile) {
       const rows = csvToObjects(text)
 
-      // Diagnostic: log raw column names + first 5 rows
-      if (rows.length > 0) {
-        console.log('[Netflix CSV] Colonnes détectées :', Object.keys(rows[0]))
-        console.log('[Netflix CSV] 5 premières lignes brutes :', rows.slice(0, 5))
-      }
+      // Détection des colonnes disponibles
+      const cols = Object.keys(rows[0] ?? {})
+      const profileCol = cols.find(k => k.toLowerCase().includes('profile') || k.toLowerCase().includes('profil'))
+      const durCol     = cols.find(k => k.toLowerCase().includes('duration') || k.toLowerCase().includes('durée'))
+      const suppCol    = cols.find(k => k.toLowerCase().includes('supplemental'))
+
+      console.log('[Netflix CSV] Colonnes :', cols, '| profil:', profileCol, '| durée:', durCol)
 
       const seen = new Set<string>()
       const out: ParsedItem[] = []
 
       for (const row of rows) {
-        // Support ancien format (Title/Date) et nouveau format français (Titre/Date de visionnage)
+        // Filtre par profil si demandé
+        if (profile && profileCol && row[profileCol] !== profile) continue
+        // Exclure bandes-annonces / clips (colonne "Supplemental Video Type")
+        if (suppCol && row[suppCol]) continue
+        // Exclure visionnages < 5 min si colonne Duration présente (format "h:mm:ss")
+        if (durCol) {
+          const parts = (row[durCol] ?? '').split(':').map(Number)
+          const secs = parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : 0
+          if (secs > 0 && secs < 300) continue
+        }
+
         const raw = row['Title'] ?? row['Titre'] ?? row['title'] ?? row['titre'] ?? ''
         if (!raw) continue
 
-        // Normalise TOUS les types d'espaces non-standard (belt-and-suspenders)
         const norm = normalizeStr(raw)
-
         let cleanTitle = norm
         let isSeries = false
 
-        // 1. Titre avec mot-clé de saison/épisode (FR ou EN) après ":" avec ou sans espace
-        //    Ex: "Black Mirror: Saison 7: ..." / "Show: Season 1: ..."
+        // 1. Mot-clé de saison/épisode (FR + EN) avec ou sans espace avant ":"
         const seasonM = norm.match(/^(.+?)\s*:\s*(?:Saison|Partie|Épisode|Episode|Chapitre|Season|Part|Chapter|Volume|S\d{1,2}\b)/i)
-        // 2. Format "Show : Sous-titre : Épisode" avec espaces autour du premier ":"
+        // 2. Format "Show : Sous-titre" avec espaces autour du ":"
         const spaceColonM = norm.match(/^(.+?)\s+:\s+/)
 
         if (seasonM) {
-          cleanTitle = normalizeStr(seasonM[1])  // normalisation du fragment extrait
-          isSeries = true
+          cleanTitle = normalizeStr(seasonM[1]); isSeries = true
         } else if (spaceColonM) {
-          cleanTitle = normalizeStr(spaceColonM[1])  // normalisation du fragment extrait
-          isSeries = true
+          cleanTitle = normalizeStr(spaceColonM[1]); isSeries = true
         }
-        // Sinon : titre complet gardé tel quel
-        // (ex: "Taylor Tomlinson: Prodigal Daughter" = spécial standup → titre réel sur TMDB)
 
-        const key = cleanTitle.toLowerCase()
-        if (seen.has(key)) continue
-        seen.add(key)
+        // ── Déduplication par titre principal (avant le premier " : ") ──────────
+        // Évite d'avoir 103× "American Horror Story: Saison X: Épisode Y" dans la liste.
+        // La clé est ce qui précède le premier ": " — si cleanTitle n'a pas de ": ", on
+        // utilise cleanTitle directement.
+        const colonIdx = cleanTitle.indexOf(': ')
+        const dedupKey = colonIdx > 0
+          ? cleanTitle.slice(0, colonIdx).toLowerCase()
+          : cleanTitle.toLowerCase()
+
+        if (seen.has(dedupKey)) continue
+        seen.add(dedupKey)
+
         out.push({ cleanTitle, year: '', importedRating: null, preferredType: isSeries ? 'series' : 'movie' })
       }
 
-      console.log('[Netflix] Titres uniques extraits :', out.length,
+      console.log('[Netflix] Titres uniques :', out.length,
         '— 20 premiers :', out.slice(0, 20).map(o => `"${o.cleanTitle}" (${o.preferredType})`))
       return out.slice(0, 300)
     },
@@ -264,6 +288,9 @@ export default function ImportPage() {
   const [savedCount, setSavedCount]   = useState(0)
   const [totalRated, setTotalRated]   = useState(0)
   const [threshold, setThreshold]     = useState(500)
+  // Profils Netflix multi-comptes
+  const [profiles, setProfiles]       = useState<string[]>([])
+  const [pendingText, setPendingText] = useState('')
   // one hidden input per source so re-uploads always trigger onChange
   const fileRefs                      = useRef<Record<Source, HTMLInputElement | null>>({ netflix: null, letterboxd: null, imdb: null, goodreads: null })
 
@@ -280,20 +307,41 @@ export default function ImportPage() {
     // Store first 20 raw lines for diagnostic
     const rawLines = text.split(/\r?\n/).slice(0, 20).filter(l => l.trim())
     setDebugLines(rawLines)
-    console.log('[CSV] 20 premières lignes brutes :', rawLines)
 
-    const parsed = SOURCES[src].parse(text)
+    // Détecter les profils Netflix multi-comptes
+    if (src === 'netflix' && SOURCES.netflix.parseProfiles) {
+      const detected = SOURCES.netflix.parseProfiles(text)
+      if (detected.length > 1) {
+        setProfiles(detected)
+        setPendingText(text)
+        setStep('profile')
+        return
+      }
+    }
+
+    await runImport(src, text, undefined)
+  }
+
+  async function handleProfileSelect(profile: string | undefined) {
+    setStep('searching')
+    await runImport(source!, pendingText, profile)
+  }
+
+  async function runImport(src: Source, text: string, profile: string | undefined) {
+    const parsed = SOURCES[src].parse(text, profile)
     // Store first 20 parsed titles for diagnostic display
     setParsedTitles(parsed.slice(0, 20).map(p => `${p.cleanTitle} [${p.preferredType}]`))
     setTotalParsed(parsed.length)
 
     if (parsed.length === 0) {
       alert('Aucun titre trouvé dans ce fichier. Vérifie le format CSV et les noms de colonnes (voir console).')
+      setStep('select')
       return
     }
 
     setStep('searching')
     setProgress({ current: 0, total: parsed.length })
+
 
     const results: MatchedItem[] = []
     const failed: string[] = []
@@ -324,6 +372,10 @@ export default function ImportPage() {
 
   function setRating(index: number, rating: number | null) {
     setMatched(prev => prev.map((m, i) => i === index ? { ...m, userRating: rating } : m))
+  }
+
+  function removeItem(index: number) {
+    setMatched(prev => prev.filter((_, i) => i !== index))
   }
 
   function quickRate(rating: number) {
@@ -407,6 +459,42 @@ export default function ImportPage() {
             </label>
           </div>
         ))}
+      </div>
+    </div>
+  )
+
+  // ── RENDER: Profile selector ─────────────────────────────────────────────
+
+  if (step === 'profile') return (
+    <div className="p-6 max-w-md mx-auto">
+      <button onClick={() => setStep('select')} className="flex items-center gap-2 text-sm text-gray-500 hover:text-white transition-colors mb-6">
+        <ArrowLeft size={16} /> Retour
+      </button>
+      <div className="flex items-center gap-3 mb-2">
+        <Users size={22} className="text-violet-400" />
+        <h2 className="text-xl font-bold">Plusieurs profils détectés</h2>
+      </div>
+      <p className="text-gray-400 text-sm mb-6">
+        Ce CSV contient l&apos;historique de plusieurs profils du compte Netflix.
+        Choisis le profil dont tu veux importer l&apos;historique.
+      </p>
+      <div className="space-y-2">
+        {profiles.map(p => (
+          <button
+            key={p}
+            onClick={() => handleProfileSelect(p)}
+            className="w-full flex items-center gap-3 px-4 py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-violet-500 rounded-xl text-left transition-all"
+          >
+            <span className="text-lg">👤</span>
+            <span className="font-medium">{p}</span>
+          </button>
+        ))}
+        <button
+          onClick={() => handleProfileSelect(undefined)}
+          className="w-full flex items-center gap-3 px-4 py-3 bg-gray-900 hover:bg-gray-800 border border-gray-800 rounded-xl text-left text-gray-400 hover:text-white transition-all text-sm"
+        >
+          Importer tous les profils
+        </button>
       </div>
     </div>
   )
@@ -523,6 +611,19 @@ export default function ImportPage() {
           </button>
         </div>
 
+        {/* Avertissement visionnages courts (Netflix uniquement) */}
+        {source === 'netflix' && (
+          <div className="mb-4 flex gap-3 items-start px-4 py-3 bg-amber-950/30 border border-amber-800/40 rounded-xl text-sm text-amber-300/80">
+            <span className="text-lg leading-none mt-0.5">⚡</span>
+            <div>
+              <p className="font-medium text-amber-200 mb-0.5">Certains titres ont peut-être été regardés brièvement</p>
+              <p className="text-xs text-amber-400/70">
+                Netflix inclut tout contenu lancé, même 1 minute. Clique sur 🗑 pour retirer les titres que tu ne reconnais pas.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Not-found report */}
         {notFoundTitles.length > 0 && (
           <details className="mb-4 bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden">
@@ -599,7 +700,7 @@ export default function ImportPage() {
               </div>
 
               {/* Rating row */}
-              <div className="flex items-center gap-3 flex-shrink-0">
+              <div className="flex items-center gap-2 flex-shrink-0">
                 <div className="flex gap-2">
                   {[5, 4, 3, 2, 1].map(v => (
                     <button
@@ -617,11 +718,18 @@ export default function ImportPage() {
                   <button
                     onClick={() => setRating(idx, null)}
                     className="text-gray-600 hover:text-gray-400 transition-colors"
-                    title="Effacer"
+                    title="Effacer la note"
                   >
                     <X size={13} />
                   </button>
                 )}
+                <button
+                  onClick={() => removeItem(idx)}
+                  className="text-gray-700 hover:text-red-500 transition-colors ml-1"
+                  title="Retirer de la liste"
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             </div>
           ))}
