@@ -119,8 +119,8 @@ const SOURCES: Record<Source, {
         const raw = row['Title'] ?? row['Titre'] ?? row['title'] ?? row['titre'] ?? ''
         if (!raw) continue
 
-        // Normalise les espaces insécables (\u00a0) que Netflix insère avant les numéros
-        const norm = raw.replace(/\u00a0/g, ' ').trim()
+        // Normalise TOUS les types d'espaces non-standard (belt-and-suspenders)
+        const norm = normalizeStr(raw)
 
         let cleanTitle = norm
         let isSeries = false
@@ -132,10 +132,10 @@ const SOURCES: Record<Source, {
         const spaceColonM = norm.match(/^(.+?)\s+:\s+/)
 
         if (seasonM) {
-          cleanTitle = seasonM[1].trim()
+          cleanTitle = normalizeStr(seasonM[1])  // normalisation du fragment extrait
           isSeries = true
         } else if (spaceColonM) {
-          cleanTitle = spaceColonM[1].trim()
+          cleanTitle = normalizeStr(spaceColonM[1])  // normalisation du fragment extrait
           isSeries = true
         }
         // Sinon : titre complet gardé tel quel
@@ -219,6 +219,15 @@ const SOURCES: Record<Source, {
   },
 }
 
+// ── String normalization ──────────────────────────────────────────────────────
+
+// Normalise TOUS les types d'espaces non-standard que Netflix insère :
+// \u00a0 espace insécable, \u202f espace fine insécable, \u2009 espace fine,
+// \u2007 espace de chiffre, \u200b espace de largeur zéro, \u00ad tiret conditionnel
+function normalizeStr(s: string): string {
+  return s.replace(/[\u00a0\u202f\u2009\u2007\u200b\u00ad]/g, ' ').replace(/\s{2,}/g, ' ').trim()
+}
+
 // ── TMDB / OL Direct Search ───────────────────────────────────────────────────
 
 const TMDB_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY!
@@ -280,23 +289,26 @@ async function searchOL(query: string): Promise<{ id: string; title: string; pos
 
 async function findItem(parsed: ParsedItem): Promise<MatchedItem | null> {
   let found: { id: string; title: string; poster: string | null; year: string } | null = null
+  const title = normalizeStr(parsed.cleanTitle)  // belt-and-suspenders avant requête
+  const year  = parsed.year || undefined
 
   if (parsed.preferredType === 'book') {
-    found = await searchOL(parsed.cleanTitle)
+    found = await searchOL(title)
   } else {
     const primary  = parsed.preferredType === 'series' ? 'tv'    : 'movie'
     const fallback = parsed.preferredType === 'series' ? 'movie' : 'tv'
 
-    // Essai 1 : titre nettoyé, type préféré
-    found = await findTMDB(primary,  parsed.cleanTitle, parsed.year || undefined)
-    // Essai 2 : titre nettoyé, type alternatif
-    if (!found) found = await findTMDB(fallback, parsed.cleanTitle, parsed.year || undefined)
+    // Étape 1 — titre complet, fr-FR puis en-US, type préféré
+    found = await findTMDB(primary, title, year)
+    // Étape 2 — titre complet, fr-FR puis en-US, type alternatif
+    if (!found) found = await findTMDB(fallback, title, year)
 
-    // Essai 3 : si le titre contient ': ', essayer la partie avant le premier ': ' comme série
-    // (ex: "Big Mistakes: Je ferai TOUT pour survivre" → "Big Mistakes")
-    if (!found && parsed.cleanTitle.includes(': ')) {
-      const short = parsed.cleanTitle.split(': ')[0].trim()
-      if (short && short !== parsed.cleanTitle) {
+    // Étape 3 — si le titre a encore ': ', extraire la partie avant et chercher comme série TV
+    // Couvre les cas où le parse n'a pas pu détecter la structure (ex: "Show: Titre épisode")
+    if (!found && title.includes(': ')) {
+      const short = normalizeStr(title.split(': ')[0])
+      if (short && short !== title) {
+        // fr-FR puis en-US, TV d'abord (les épisodes sont toujours dans des séries)
         found = await findTMDB('tv',    short, undefined)
         if (!found) found = await findTMDB('movie', short, undefined)
       }
@@ -324,6 +336,7 @@ export default function ImportPage() {
   const [notFoundTitles, setNotFoundTitles] = useState<string[]>([])
   const [debugLines, setDebugLines]         = useState<string[]>([])
   const [parsedTitles, setParsedTitles]     = useState<string[]>([])
+  const [totalParsed, setTotalParsed]       = useState(0)
   const [quickIndex, setQuickIndex]   = useState(0)
   const [savedCount, setSavedCount]   = useState(0)
   const [totalRated, setTotalRated]   = useState(0)
@@ -349,6 +362,7 @@ export default function ImportPage() {
     const parsed = SOURCES[src].parse(text)
     // Store first 20 parsed titles for diagnostic display
     setParsedTitles(parsed.slice(0, 20).map(p => `${p.cleanTitle} [${p.preferredType}]`))
+    setTotalParsed(parsed.length)
 
     if (parsed.length === 0) {
       alert('Aucun titre trouvé dans ce fichier. Vérifie le format CSV et les noms de colonnes (voir console).')
@@ -569,7 +583,12 @@ export default function ImportPage() {
           <div>
             <h2 className="text-xl font-bold">Confirme ta sélection</h2>
             <p className="text-gray-400 text-sm mt-0.5">
-              {matched.length} reconnus
+              {totalParsed > 0 && (
+                <span className={matched.length / totalParsed >= 0.8 ? 'text-emerald-400' : 'text-amber-400'}>
+                  {Math.round(matched.length / totalParsed * 100)}% reconnus
+                </span>
+              )}
+              {' · '}{matched.length} trouvés
               {notFoundTitles.length > 0 && <> · <span className="text-gray-500">{notFoundTitles.length} non trouvés</span></>}
               {' · '}<span className="text-violet-300">{ratedCount} noté{ratedCount > 1 ? 's' : ''}</span>
             </p>
@@ -725,7 +744,12 @@ export default function ImportPage() {
           <h2 className="text-2xl font-bold mb-2">Import terminé !</h2>
           <p className="text-gray-400">
             <span className="text-white font-semibold">{savedCount}</span>{' '}
-            produit{savedCount > 1 ? 's' : ''} importé{savedCount > 1 ? 's' : ''} avec succès
+            produit{savedCount > 1 ? 's' : ''} importé{savedCount > 1 ? 's' : ''}
+            {totalParsed > 0 && (
+              <span className="text-gray-500 text-xs ml-2">
+                ({Math.round((matched.length / totalParsed) * 100)}% du CSV reconnu)
+              </span>
+            )}
           </p>
           {notFoundTitles.length > 0 && (
             <details className="mt-2 text-left">
