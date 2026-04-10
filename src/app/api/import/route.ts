@@ -33,8 +33,11 @@ async function searchTMDB(
   url.searchParams.set('language', lang)
   if (year) url.searchParams.set(type === 'movie' ? 'year' : 'first_air_date_year', year)
   try {
-    const res = await fetch(url.toString(), { next: { revalidate: 0 } })
-    if (!res.ok) return null
+    const res = await fetch(url.toString())  // pas d'option next/cache — identique à /api/search
+    if (!res.ok) {
+      console.error('[import] TMDB error', res.status, query, lang, 'key_set:', !!TMDB_KEY)
+      return null
+    }
     const data = await res.json()
     const results: Record<string, unknown>[] = data.results ?? []
     if (!results.length) return null
@@ -49,7 +52,10 @@ async function searchTMDB(
       poster: best.poster_path ? `${IMG}${best.poster_path}` : null,
       year: String(best.release_date ?? best.first_air_date ?? '').slice(0, 4),
     }
-  } catch { return null }
+  } catch (e) {
+    console.error('[import] TMDB fetch failed', query, e)
+    return null
+  }
 }
 
 async function findTMDB(type: 'movie' | 'tv', query: string, year?: string) {
@@ -60,8 +66,7 @@ async function findTMDB(type: 'movie' | 'tv', query: string, year?: string) {
 async function searchOL(query: string): Promise<{ id: string; title: string; poster: string | null; year: string } | null> {
   try {
     const res = await fetch(
-      `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=3&fields=key,title,first_publish_year,cover_i`,
-      { next: { revalidate: 0 } }
+      `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=3&fields=key,title,first_publish_year,cover_i`
     )
     if (!res.ok) return null
     const data = await res.json()
