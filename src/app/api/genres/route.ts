@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const TMDB_KEY  = process.env.NEXT_PUBLIC_TMDB_API_KEY!
+const TMDB_KEY  = (process.env.NEXT_PUBLIC_TMDB_API_KEY ?? '').trim()
 const TMDB_BASE = 'https://api.themoviedb.org/3'
 
 /**
