@@ -228,95 +228,18 @@ function normalizeStr(s: string): string {
   return s.replace(/[\u00a0\u202f\u2009\u2007\u200b\u00ad]/g, ' ').replace(/\s{2,}/g, ' ').trim()
 }
 
-// ── TMDB / OL Direct Search ───────────────────────────────────────────────────
+// ── Server-side search via API route ─────────────────────────────────────────
+// La recherche TMDB/OL se fait côté SERVEUR pour éviter tout problème de cache
+// navigateur ou de CORS. L'API route /api/import est toujours fraîche.
 
-const TMDB_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY!
-const IMG = 'https://image.tmdb.org/t/p/w154'
-
-async function searchTMDB(
-  type: 'movie' | 'tv',
-  query: string,
-  year?: string,
-  lang = 'fr-FR',
-): Promise<{ id: string; title: string; poster: string | null; year: string } | null> {
-  const url = new URL(`https://api.themoviedb.org/3/search/${type}`)
-  url.searchParams.set('api_key', TMDB_KEY)
-  url.searchParams.set('query', query)
-  url.searchParams.set('language', lang)
-  if (year) url.searchParams.set(type === 'movie' ? 'year' : 'first_air_date_year', year)
-  try {
-    const res = await fetch(url.toString())
-    if (!res.ok) return null
-    const data = await res.json()
-    const results: Record<string, unknown>[] = data.results ?? []
-    if (!results.length) return null
-    let best = results[0]
-    if (year) {
-      const match = results.find(r => String(r.release_date ?? r.first_air_date ?? '').startsWith(year))
-      if (match) best = match
-    }
-    return {
-      id: String(best.id),
-      title: (best.title ?? best.name) as string,
-      poster: best.poster_path ? `${IMG}${best.poster_path}` : null,
-      year: String(best.release_date ?? best.first_air_date ?? '').slice(0, 4),
-    }
-  } catch { return null }
-}
-
-// Essaie fr-FR puis en-US comme fallback
-async function findTMDB(type: 'movie' | 'tv', query: string, year?: string) {
-  return (await searchTMDB(type, query, year, 'fr-FR')) ??
-         (await searchTMDB(type, query, year, 'en-US'))
-}
-
-async function searchOL(query: string): Promise<{ id: string; title: string; poster: string | null; year: string } | null> {
-  try {
-    const res = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=3&fields=key,title,first_publish_year,cover_i`)
-    if (!res.ok) return null
-    const data = await res.json()
-    const docs: Record<string, unknown>[] = data.docs ?? []
-    if (!docs.length) return null
-    const item = docs[0]
-    return {
-      id: (item.key as string).replace('/works/', ''),
-      title: item.title as string,
-      poster: item.cover_i ? `https://covers.openlibrary.org/b/id/${item.cover_i}-S.jpg` : null,
-      year: String(item.first_publish_year ?? ''),
-    }
-  } catch { return null }
-}
-
-async function findItem(parsed: ParsedItem): Promise<MatchedItem | null> {
-  let found: { id: string; title: string; poster: string | null; year: string } | null = null
-  const title = normalizeStr(parsed.cleanTitle)  // belt-and-suspenders avant requête
-  const year  = parsed.year || undefined
-
-  if (parsed.preferredType === 'book') {
-    found = await searchOL(title)
-  } else {
-    const primary  = parsed.preferredType === 'series' ? 'tv'    : 'movie'
-    const fallback = parsed.preferredType === 'series' ? 'movie' : 'tv'
-
-    // Étape 1 — titre complet, fr-FR puis en-US, type préféré
-    found = await findTMDB(primary, title, year)
-    // Étape 2 — titre complet, fr-FR puis en-US, type alternatif
-    if (!found) found = await findTMDB(fallback, title, year)
-
-    // Étape 3 — si le titre a encore ': ', extraire la partie avant et chercher comme série TV
-    // Couvre les cas où le parse n'a pas pu détecter la structure (ex: "Show: Titre épisode")
-    if (!found && title.includes(': ')) {
-      const short = normalizeStr(title.split(': ')[0])
-      if (short && short !== title) {
-        // fr-FR puis en-US, TV d'abord (les épisodes sont toujours dans des séries)
-        found = await findTMDB('tv',    short, undefined)
-        if (!found) found = await findTMDB('movie', short, undefined)
-      }
-    }
-  }
-
-  if (!found) return null
-  return { ...parsed, externalId: found.id, displayTitle: found.title, poster: found.poster, year: found.year || parsed.year, userRating: parsed.importedRating }
+async function searchBatch(titles: ParsedItem[]): Promise<{ matched: MatchedItem[]; notFound: string[] }> {
+  const res = await fetch('/api/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ titles }),
+  })
+  if (!res.ok) return { matched: [], notFound: titles.map(t => t.cleanTitle) }
+  return res.json()
 }
 
 // ── Emoji constants ───────────────────────────────────────────────────────────
@@ -374,18 +297,15 @@ export default function ImportPage() {
 
     const results: MatchedItem[] = []
     const failed: string[] = []
-    const BATCH = 5
+    // Batches de 30 vers l'API serveur — chaque appel reste sous 10s (timeout Vercel)
+    const BATCH = 30
 
     for (let i = 0; i < parsed.length; i += BATCH) {
       const batch = parsed.slice(i, i + BATCH)
-      const batchResults = await Promise.all(batch.map(item => findItem(item)))
-      for (let j = 0; j < batch.length; j++) {
-        const r = batchResults[j]
-        if (r) results.push(r)
-        else failed.push(batch[j].cleanTitle)
-      }
+      const { matched: batchMatched, notFound: batchFailed } = await searchBatch(batch)
+      results.push(...batchMatched)
+      failed.push(...batchFailed)
       setProgress({ current: Math.min(i + BATCH, parsed.length), total: parsed.length })
-      if (i + BATCH < parsed.length) await new Promise(r => setTimeout(r, 100))
     }
 
     console.log('[Import] Reconnus :', results.length, '/ Non trouvés :', failed.length)
