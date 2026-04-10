@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback } from 'react'
-import { Film, Tv, BookOpen, Search, Star } from 'lucide-react'
+import { Film, Tv, BookOpen, Search, Star, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { MediaType } from '@/types'
 import MediaDrawer from '@/components/discover/MediaDrawer'
@@ -81,8 +81,17 @@ export default function DiscoverPage() {
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && search()}
             placeholder={`Rechercher ${activeTab === 'movie' ? 'un film' : activeTab === 'series' ? 'une série' : 'un livre'}...`}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-10 pr-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-violet-500 transition-colors"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-10 pr-10 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-violet-500 transition-colors"
           />
+          {query && (
+            <button
+              onClick={() => { setQuery(''); setResults([]) }}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white transition-colors"
+              aria-label="Effacer"
+            >
+              <X size={16} />
+            </button>
+          )}
         </div>
         <button
           onClick={search}
