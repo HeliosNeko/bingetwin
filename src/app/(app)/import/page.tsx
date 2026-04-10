@@ -56,7 +56,9 @@ function parseCSV(text: string): string[][] {
 }
 
 function csvToObjects(text: string): Record<string, string>[] {
-  const rows = parseCSV(text)
+  // Strip UTF-8 BOM (\uFEFF) that Windows/Mac exports often prepend
+  const clean = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text
+  const rows = parseCSV(clean)
   if (rows.length < 2) return []
   const headers = rows[0].map(h => h.trim())
   return rows.slice(1).map(row => {
@@ -102,16 +104,49 @@ const SOURCES: Record<Source, {
     ],
     parse(text) {
       const rows = csvToObjects(text)
+
+      // Diagnostic: log raw column names + first 5 rows
+      if (rows.length > 0) {
+        console.log('[Netflix CSV] Colonnes détectées :', Object.keys(rows[0]))
+        console.log('[Netflix CSV] 5 premières lignes :', rows.slice(0, 5))
+      }
+
       const seen = new Set<string>()
       const out: ParsedItem[] = []
+
       for (const row of rows) {
-        const raw = row['Title'] ?? row['Titre'] ?? ''; if (!raw) continue
-        const seriesM = raw.match(/^(.+?):\s*(?:Season|Saison|Partie|Part)\s*\d+/i)
-        const cleanTitle = seriesM ? seriesM[1].trim() : raw.trim()
+        // Support ancien format (Title/Date) et nouveau format français (Titre/Date de visionnage)
+        const raw = row['Title'] ?? row['Titre'] ?? row['title'] ?? row['titre'] ?? ''
+        if (!raw) continue
+
+        let cleanTitle = raw.trim()
+        let isSeries = false
+
+        // 1. Format français avec espaces : "Show : Saison 2 : Épisode 5"
+        const frM = raw.match(/^(.+?)\s+:\s+(?:Saison|Partie|Épisode|Episode|Chapitre)\b/i)
+        // 2. Format anglais sans espaces : "Show: Season 2: Episode 5"
+        const enM = raw.match(/^(.+?):\s*(?:Season|Part|Episode|Chapter|Series|Volume)\b/i)
+        // 3. Numéro de saison seul : "Show : S01" ou "Show: S01"
+        const sNum = raw.match(/^(.+?)\s*:\s*S\d+/i)
+
+        if (frM)      { cleanTitle = frM[1].trim();  isSeries = true }
+        else if (enM) { cleanTitle = enM[1].trim();  isSeries = true }
+        else if (sNum){ cleanTitle = sNum[1].trim(); isSeries = true }
+        else if (raw.includes(' : ')) {
+          // Fallback : tout ce qui contient " : " (séparateur Netflix français)
+          // → prendre uniquement ce qui est avant le premier " : "
+          cleanTitle = raw.split(' : ')[0].trim()
+          isSeries = true
+        }
+
         const key = cleanTitle.toLowerCase()
-        if (seen.has(key)) continue; seen.add(key)
-        out.push({ cleanTitle, year: '', importedRating: null, preferredType: seriesM ? 'series' : 'movie' })
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push({ cleanTitle, year: '', importedRating: null, preferredType: isSeries ? 'series' : 'movie' })
       }
+
+      console.log('[Netflix] Titres uniques extraits :', out.length,
+        '— exemples :', out.slice(0, 8).map(o => `"${o.cleanTitle}" (${o.preferredType})`))
       return out.slice(0, 300)
     },
   },
@@ -187,11 +222,16 @@ const SOURCES: Record<Source, {
 const TMDB_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY!
 const IMG = 'https://image.tmdb.org/t/p/w154'
 
-async function searchTMDB(type: 'movie' | 'tv', query: string, year?: string): Promise<{ id: string; title: string; poster: string | null; year: string } | null> {
+async function searchTMDB(
+  type: 'movie' | 'tv',
+  query: string,
+  year?: string,
+  lang = 'fr-FR',
+): Promise<{ id: string; title: string; poster: string | null; year: string } | null> {
   const url = new URL(`https://api.themoviedb.org/3/search/${type}`)
   url.searchParams.set('api_key', TMDB_KEY)
   url.searchParams.set('query', query)
-  url.searchParams.set('language', 'fr-FR')
+  url.searchParams.set('language', lang)
   if (year) url.searchParams.set(type === 'movie' ? 'year' : 'first_air_date_year', year)
   try {
     const res = await fetch(url.toString())
@@ -199,7 +239,6 @@ async function searchTMDB(type: 'movie' | 'tv', query: string, year?: string): P
     const data = await res.json()
     const results: Record<string, unknown>[] = data.results ?? []
     if (!results.length) return null
-    // Prefer year match
     let best = results[0]
     if (year) {
       const match = results.find(r => String(r.release_date ?? r.first_air_date ?? '').startsWith(year))
@@ -212,6 +251,12 @@ async function searchTMDB(type: 'movie' | 'tv', query: string, year?: string): P
       year: String(best.release_date ?? best.first_air_date ?? '').slice(0, 4),
     }
   } catch { return null }
+}
+
+// Essaie fr-FR puis en-US comme fallback
+async function findTMDB(type: 'movie' | 'tv', query: string, year?: string) {
+  return (await searchTMDB(type, query, year, 'fr-FR')) ??
+         (await searchTMDB(type, query, year, 'en-US'))
 }
 
 async function searchOL(query: string): Promise<{ id: string; title: string; poster: string | null; year: string } | null> {
@@ -237,10 +282,10 @@ async function findItem(parsed: ParsedItem): Promise<MatchedItem | null> {
   if (parsed.preferredType === 'book') {
     found = await searchOL(parsed.cleanTitle)
   } else {
-    const primaryType = parsed.preferredType === 'series' ? 'tv' : 'movie'
-    const fallbackType = parsed.preferredType === 'series' ? 'movie' : 'tv'
-    found = await searchTMDB(primaryType, parsed.cleanTitle, parsed.year || undefined)
-    if (!found) found = await searchTMDB(fallbackType, parsed.cleanTitle, parsed.year || undefined)
+    const primary  = parsed.preferredType === 'series' ? 'tv'    : 'movie'
+    const fallback = parsed.preferredType === 'series' ? 'movie' : 'tv'
+    found = await findTMDB(primary,  parsed.cleanTitle, parsed.year || undefined)
+    if (!found) found = await findTMDB(fallback, parsed.cleanTitle, parsed.year || undefined)
   }
 
   if (!found) return null
@@ -261,7 +306,8 @@ export default function ImportPage() {
   const [step, setStep]               = useState<Step>('select')
   const [progress, setProgress]       = useState({ current: 0, total: 0 })
   const [matched, setMatched]         = useState<MatchedItem[]>([])
-  const [notFound, setNotFound]       = useState(0)
+  const [notFoundTitles, setNotFoundTitles] = useState<string[]>([])
+  const [debugLines, setDebugLines]         = useState<string[]>([])
   const [quickIndex, setQuickIndex]   = useState(0)
   const [savedCount, setSavedCount]   = useState(0)
   const [totalRated, setTotalRated]   = useState(0)
@@ -278,10 +324,16 @@ export default function ImportPage() {
     setSource(src)
 
     const text = await file.text()
+
+    // Store first 5 raw lines for diagnostic
+    const rawLines = text.split(/\r?\n/).slice(0, 5).filter(l => l.trim())
+    setDebugLines(rawLines)
+    console.log('[CSV] 5 premières lignes brutes :', rawLines)
+
     const parsed = SOURCES[src].parse(text)
 
     if (parsed.length === 0) {
-      alert('Aucun titre trouvé dans ce fichier. Vérifie le format CSV.')
+      alert('Aucun titre trouvé dans ce fichier. Vérifie le format CSV et les noms de colonnes (voir console).')
       return
     }
 
@@ -289,20 +341,25 @@ export default function ImportPage() {
     setProgress({ current: 0, total: parsed.length })
 
     const results: MatchedItem[] = []
+    const failed: string[] = []
     const BATCH = 5
 
     for (let i = 0; i < parsed.length; i += BATCH) {
       const batch = parsed.slice(i, i + BATCH)
       const batchResults = await Promise.all(batch.map(item => findItem(item)))
-      for (const r of batchResults) {
+      for (let j = 0; j < batch.length; j++) {
+        const r = batchResults[j]
         if (r) results.push(r)
+        else failed.push(batch[j].cleanTitle)
       }
       setProgress({ current: Math.min(i + BATCH, parsed.length), total: parsed.length })
       if (i + BATCH < parsed.length) await new Promise(r => setTimeout(r, 100))
     }
 
+    console.log('[Import] Reconnus :', results.length, '/ Non trouvés :', failed.length)
+    console.log('[Import] 10 premiers non trouvés :', failed.slice(0, 10))
     setMatched(results)
-    setNotFound(parsed.length - results.length)
+    setNotFoundTitles(failed)
 
     const allUnrated = results.every(m => m.userRating === null)
     if (allUnrated && results.length > 0) {
@@ -495,7 +552,7 @@ export default function ImportPage() {
             <h2 className="text-xl font-bold">Confirme ta sélection</h2>
             <p className="text-gray-400 text-sm mt-0.5">
               {matched.length} reconnus
-              {notFound > 0 && <> · <span className="text-gray-500">{notFound} non trouvés</span></>}
+              {notFoundTitles.length > 0 && <> · <span className="text-gray-500">{notFoundTitles.length} non trouvés</span></>}
               {' · '}<span className="text-violet-300">{ratedCount} noté{ratedCount > 1 ? 's' : ''}</span>
             </p>
           </div>
@@ -508,6 +565,38 @@ export default function ImportPage() {
             Valider ({ratedCount})
           </button>
         </div>
+
+        {/* Not-found report */}
+        {notFoundTitles.length > 0 && (
+          <details className="mb-4 bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden">
+            <summary className="px-4 py-2.5 text-sm text-gray-400 cursor-pointer hover:text-white transition-colors list-none flex items-center justify-between">
+              <span>⚠️ {notFoundTitles.length} titre{notFoundTitles.length > 1 ? 's' : ''} non reconnu{notFoundTitles.length > 1 ? 's' : ''} sur TMDB/OL</span>
+              <span className="text-xs text-gray-600">▾ afficher</span>
+            </summary>
+            <div className="px-4 pb-3 pt-1 space-y-1">
+              {notFoundTitles.slice(0, 20).map((t, i) => (
+                <p key={i} className="text-xs text-gray-500 font-mono">— {t}</p>
+              ))}
+              {notFoundTitles.length > 20 && (
+                <p className="text-xs text-gray-600">…et {notFoundTitles.length - 20} autres</p>
+              )}
+            </div>
+          </details>
+        )}
+
+        {/* Debug: raw CSV lines */}
+        {debugLines.length > 0 && (
+          <details className="mb-4">
+            <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-400 transition-colors list-none">
+              🔍 Format CSV détecté (5 premières lignes)
+            </summary>
+            <div className="mt-2 bg-gray-950 border border-gray-800 rounded-lg p-3 space-y-1">
+              {debugLines.map((line, i) => (
+                <p key={i} className="text-xs text-gray-500 font-mono truncate">{line}</p>
+              ))}
+            </div>
+          </details>
+        )}
 
         {/* Quick rate mode CTA */}
         {unratedCount > 0 && (
@@ -609,9 +698,9 @@ export default function ImportPage() {
             <span className="text-white font-semibold">{savedCount}</span>{' '}
             produit{savedCount > 1 ? 's' : ''} importé{savedCount > 1 ? 's' : ''} avec succès
           </p>
-          {notFound > 0 && (
+          {notFoundTitles.length > 0 && (
             <p className="text-gray-500 text-sm mt-1">
-              {notFound} titre{notFound > 1 ? 's' : ''} non reconnu{notFound > 1 ? 's' : ''} (introuvable sur TMDB/OL)
+              {notFoundTitles.length} titre{notFoundTitles.length > 1 ? 's' : ''} non reconnu{notFoundTitles.length > 1 ? 's' : ''} (introuvable sur TMDB/OL)
             </p>
           )}
         </div>
