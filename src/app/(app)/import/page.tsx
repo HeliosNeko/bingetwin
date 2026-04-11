@@ -256,31 +256,30 @@ function normalizeStr(s: string): string {
 // La recherche TMDB/OL se fait côté SERVEUR pour éviter tout problème de cache
 // navigateur ou de CORS. L'API route /api/import est toujours fraîche.
 
-// ── LocalStorage cache — persistance de la liste importée ────────────────────
+// ── DB-backed session cache — persistance de la liste importée ────────────────
+// La liste de titres reconnus est sauvegardée en base après chaque import CSV.
+// Elle est rechargée au montage de la page, sans avoir à re-uploader le CSV.
 
-interface ImportCache {
+interface ImportSession {
   items: MatchedItem[]
   totalParsed: number
   notFound: string[]
-  savedAt: number  // timestamp ms
 }
 
-const cacheKey = (src: Source) => `bingetwin_import_${src}`
-
-function saveCache(src: Source, data: ImportCache) {
-  try { localStorage.setItem(cacheKey(src), JSON.stringify(data)) } catch { /* ignore quota */ }
-}
-
-function loadCache(src: Source): ImportCache | null {
+async function apiSaveSession(src: Source, data: ImportSession) {
   try {
-    const raw = localStorage.getItem(cacheKey(src))
-    if (!raw) return null
-    return JSON.parse(raw) as ImportCache
-  } catch { return null }
+    await fetch('/api/import-sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: src, items: data.items, totalParsed: data.totalParsed, notFound: data.notFound }),
+    })
+  } catch { /* ignore */ }
 }
 
-function clearCache(src: Source) {
-  try { localStorage.removeItem(cacheKey(src)) } catch { /* ignore */ }
+async function apiDeleteSession(src: Source) {
+  try {
+    await fetch(`/api/import-sessions?source=${src}`, { method: 'DELETE' })
+  } catch { /* ignore */ }
 }
 
 async function searchBatch(titles: ParsedItem[]): Promise<{ matched: MatchedItem[]; notFound: string[] }> {
@@ -291,6 +290,71 @@ async function searchBatch(titles: ParsedItem[]): Promise<{ matched: MatchedItem
   })
   if (!res.ok) return { matched: [], notFound: titles.map(t => t.cleanTitle) }
   return res.json()
+}
+
+// ── Existing-ratings merge ────────────────────────────────────────────────────
+// Vérifie pour chaque MatchedItem si l'utilisateur l'a déjà noté dans ses
+// favoris, et pré-remplit userRating. Retourne aussi l'ensemble des clés
+// pré-notées pour affichage visuel dans la liste.
+
+async function mergeExistingRatings(
+  items: MatchedItem[],
+): Promise<{ items: MatchedItem[]; preRatedKeys: Set<string> }> {
+  const preRatedKeys = new Set<string>()
+
+  // ── LOG 1 : entrée dans la fonction ──────────────────────────────────────
+  console.log('[merge] début, nb titres:', items.length)
+
+  if (items.length === 0) {
+    console.log('[merge] liste vide — abandon')
+    return { items, preRatedKeys }
+  }
+
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  // ── LOG 2 : état de la session utilisateur ────────────────────────────────
+  console.log('[merge] user:', user?.id ?? 'NON CONNECTÉ')
+  if (!user) return { items, preRatedKeys }
+
+  const externalIds = [...new Set(items.map(m => String(m.externalId)))]
+
+  // ── LOG 3 : IDs envoyés à Supabase ───────────────────────────────────────
+  console.log('[merge] externalIds (3 premiers):', externalIds.slice(0, 3), '— total:', externalIds.length)
+
+  const { data, error } = await supabase
+    .from('favorites')
+    .select('external_id, media_type, rating')
+    .eq('user_id', user.id)
+    .in('external_id', externalIds)
+    .not('rating', 'is', null)
+
+  // ── LOG 4 : résultat Supabase ─────────────────────────────────────────────
+  console.log('[merge] favoris:', data?.length ?? 0, 'erreur:', error?.message ?? null)
+  if (data && data.length > 0) {
+    console.log('[merge] 3 premiers favoris:', data.slice(0, 3).map(f => `${f.external_id}::${f.media_type}→${f.rating}`))
+  }
+
+  if (!data || data.length === 0) return { items, preRatedKeys }
+
+  const ratingMap = new Map<string, number>()
+  for (const fav of data) {
+    ratingMap.set(`${String(fav.external_id)}::${fav.media_type}`, fav.rating as number)
+  }
+
+  const merged = items.map(item => {
+    const key = `${String(item.externalId)}::${item.preferredType}`
+    const existing = ratingMap.get(key)
+    if (existing != null) {
+      preRatedKeys.add(key)
+      return { ...item, userRating: existing }
+    }
+    return item
+  })
+
+  // ── LOG 5 : résultat final ────────────────────────────────────────────────
+  console.log('[merge] prénotés:', preRatedKeys.size, 'sur', items.length)
+  return { items: merged, preRatedKeys }
 }
 
 // ── Emoji constants ───────────────────────────────────────────────────────────
@@ -318,19 +382,30 @@ export default function ImportPage() {
   // Profils Netflix multi-comptes
   const [profiles, setProfiles]       = useState<string[]>([])
   const [pendingText, setPendingText] = useState('')
-  // Persistance : nb de titres sauvegardés par source (lu depuis localStorage au montage)
+  // Persistance : sessions d'import sauvegardées en base par source
+  const [sessions, setSessions]       = useState<Partial<Record<Source, ImportSession>>>({})
   const [savedCounts, setSavedCounts] = useState<Partial<Record<Source, number>>>({})
+  // Clés des titres déjà notés en favoris (pour affichage visuel "déjà noté")
+  const [preRatedKeys, setPreRatedKeys] = useState<Set<string>>(new Set())
   // one hidden input per source so re-uploads always trigger onChange
   const fileRefs                      = useRef<Record<Source, HTMLInputElement | null>>({ netflix: null, letterboxd: null, imdb: null, goodreads: null })
 
-  // Lecture du cache au montage de la page
+  // Chargement des sessions sauvegardées au montage de la page
   useEffect(() => {
-    const counts: Partial<Record<Source, number>> = {}
-    for (const src of ['netflix', 'letterboxd', 'imdb', 'goodreads'] as Source[]) {
-      const c = loadCache(src)
-      if (c) counts[src] = c.items.length
-    }
-    setSavedCounts(counts)
+    fetch('/api/import-sessions')
+      .then(r => r.ok ? r.json() : { sessions: [] })
+      .then(({ sessions: rows }: { sessions: { source: string; items: MatchedItem[]; total_parsed: number; not_found: string[] }[] }) => {
+        const map: Partial<Record<Source, ImportSession>> = {}
+        const counts: Partial<Record<Source, number>> = {}
+        for (const row of rows) {
+          const src = row.source as Source
+          map[src] = { items: row.items, totalParsed: row.total_parsed, notFound: row.not_found }
+          counts[src] = row.items.length
+        }
+        setSessions(map)
+        setSavedCounts(counts)
+      })
+      .catch(() => {})
   }, [])
 
   // ── File processing ──────────────────────────────────────────────────────
@@ -396,32 +471,48 @@ export default function ImportPage() {
     }
 
     console.log('[Import] Reconnus :', results.length, '/ Non trouvés :', failed.length)
-    setMatched(results)
+
+    // Pré-remplir les notes depuis les favoris existants
+    console.log('[Import] → appel mergeExistingRatings après CSV')
+    const { items: mergedResults, preRatedKeys: keys } = await mergeExistingRatings(results)
+    setMatched(mergedResults)
+    setPreRatedKeys(keys)
     setNotFoundTitles(failed)
 
-    // Sauvegarde dans le cache local pour ne pas avoir à re-uploader le CSV
-    saveCache(src, { items: results, totalParsed: parsed.length, notFound: failed, savedAt: Date.now() })
+    // Sauvegarde en base pour ne pas avoir à re-uploader le CSV
+    const session: ImportSession = { items: results, totalParsed: parsed.length, notFound: failed }
+    await apiSaveSession(src, session)
+    setSessions(prev => ({ ...prev, [src]: session }))
     setSavedCounts(prev => ({ ...prev, [src]: results.length }))
 
     setStep('review')
   }
 
   // Charger une session sauvegardée sans re-uploader le CSV
-  function loadFromCache(src: Source) {
-    const c = loadCache(src)
-    if (!c) return
+  async function loadFromCache(src: Source) {
+    console.log('[loadFromCache] src:', src, '— session en mémoire:', sessions[src] ? `${sessions[src]!.items.length} titres` : 'NULLE')
+    const session = sessions[src]
+    if (!session) {
+      console.log('[loadFromCache] session introuvable — abandon')
+      return
+    }
     setSource(src)
-    setMatched(c.items)
-    setNotFoundTitles(c.notFound)
-    setTotalParsed(c.totalParsed)
+    // Pré-remplir les notes depuis les favoris existants
+    console.log('[loadFromCache] → appel mergeExistingRatings, session items:', session.items.length)
+    const { items: mergedItems, preRatedKeys: keys } = await mergeExistingRatings(session.items)
+    setMatched(mergedItems)
+    setPreRatedKeys(keys)
+    setNotFoundTitles(session.notFound)
+    setTotalParsed(session.totalParsed)
     setParsedTitles([])
     setDebugLines([])
     setStep('review')
   }
 
-  // Réinitialiser une source (efface le cache + revient à l'upload)
+  // Réinitialiser une source (supprime la session en base + revient à l'upload)
   function resetSource(src: Source) {
-    clearCache(src)
+    apiDeleteSession(src)
+    setSessions(prev => { const n = { ...prev }; delete n[src]; return n })
     setSavedCounts(prev => { const n = { ...prev }; delete n[src]; return n })
   }
 
@@ -474,9 +565,10 @@ export default function ImportPage() {
     setSavedCount(toSave.length)
     setTotalRated(count ?? 0)
     setThreshold(Number(settingRow?.value ?? 500))
-    // Cache effacé après sauvegarde réussie en base
+    // Session supprimée après sauvegarde réussie en base
     if (source) {
-      clearCache(source)
+      apiDeleteSession(source)
+      setSessions(prev => { const n = { ...prev }; delete n[source!]; return n })
       setSavedCounts(prev => { const n = { ...prev }; delete n[source!]; return n })
     }
     setStep('done')
@@ -791,7 +883,10 @@ export default function ImportPage() {
 
         {/* List */}
         <div className="divide-y divide-gray-800/60">
-          {matched.map((item, idx) => (
+          {matched.map((item, idx) => {
+            const itemKey = `${item.externalId}::${item.preferredType}`
+            const isPreRated = preRatedKeys.has(itemKey)
+            return (
             <div key={`${item.externalId}-${idx}`} className="flex items-center gap-3 py-3">
               {/* Thumbnail */}
               <div className="w-9 h-[52px] flex-shrink-0 rounded-md overflow-hidden bg-gray-800">
@@ -803,8 +898,19 @@ export default function ImportPage() {
 
               {/* Info */}
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{item.displayTitle}</p>
-                {item.year && <p className="text-xs text-gray-500">{item.year}</p>}
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-medium truncate">{item.displayTitle}</p>
+                  {isPreRated && (
+                    <span className="flex-shrink-0 text-[10px] font-medium text-emerald-400/80 bg-emerald-900/30 border border-emerald-700/30 px-1.5 py-0.5 rounded-full leading-none">
+                      déjà noté
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500">
+                  {item.year && <span>{item.year}</span>}
+                  {item.year && <span className="mx-1">·</span>}
+                  <span>{item.preferredType === 'movie' ? 'Film' : item.preferredType === 'series' ? 'Série' : 'Livre'}</span>
+                </p>
               </div>
 
               {/* Rating row */}
@@ -816,7 +922,13 @@ export default function ImportPage() {
                       onClick={() => setRating(idx, v)}
                       title={LABELS[v]}
                       style={{ fontSize: '24px', lineHeight: 1 }}
-                      className={`transition-all hover:scale-110 ${item.userRating === v ? 'ring-2 ring-violet-500 rounded-md' : 'opacity-40 hover:opacity-100'}`}
+                      className={`transition-all hover:scale-110 ${
+                        item.userRating === v
+                          ? isPreRated
+                            ? 'ring-2 ring-emerald-500 rounded-md'
+                            : 'ring-2 ring-violet-500 rounded-md'
+                          : 'opacity-40 hover:opacity-100'
+                      }`}
                     >
                       {EMOJIS[v]}
                     </button>
@@ -840,7 +952,8 @@ export default function ImportPage() {
                 </button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
 
         {/* Bottom CTA */}
