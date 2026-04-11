@@ -257,29 +257,14 @@ function normalizeStr(s: string): string {
 // navigateur ou de CORS. L'API route /api/import est toujours fraîche.
 
 // ── DB-backed session cache — persistance de la liste importée ────────────────
-// La liste de titres reconnus est sauvegardée en base après chaque import CSV.
-// Elle est rechargée au montage de la page, sans avoir à re-uploader le CSV.
+// Toutes les opérations sur import_sessions utilisent le client Supabase
+// côté navigateur (jamais l'API route serveur) pour éviter les problèmes
+// de session SSR et garantir que l'utilisateur est toujours authentifié.
 
 interface ImportSession {
   items: MatchedItem[]
   totalParsed: number
   notFound: string[]
-}
-
-async function apiSaveSession(src: Source, data: ImportSession) {
-  try {
-    await fetch('/api/import-sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: src, items: data.items, totalParsed: data.totalParsed, notFound: data.notFound }),
-    })
-  } catch { /* ignore */ }
-}
-
-async function apiDeleteSession(src: Source) {
-  try {
-    await fetch(`/api/import-sessions?source=${src}`, { method: 'DELETE' })
-  } catch { /* ignore */ }
 }
 
 async function searchBatch(titles: ParsedItem[]): Promise<{ matched: MatchedItem[]; notFound: string[] }> {
@@ -391,21 +376,29 @@ export default function ImportPage() {
   const fileRefs                      = useRef<Record<Source, HTMLInputElement | null>>({ netflix: null, letterboxd: null, imdb: null, goodreads: null })
 
   // Chargement des sessions sauvegardées au montage de la page
+  // Utilise le client Supabase navigateur (session cookie déjà disponible).
   useEffect(() => {
-    fetch('/api/import-sessions')
-      .then(r => r.ok ? r.json() : { sessions: [] })
-      .then(({ sessions: rows }: { sessions: { source: string; items: MatchedItem[]; total_parsed: number; not_found: string[] }[] }) => {
-        const map: Partial<Record<Source, ImportSession>> = {}
-        const counts: Partial<Record<Source, number>> = {}
-        for (const row of rows) {
-          const src = row.source as Source
-          map[src] = { items: row.items, totalParsed: row.total_parsed, notFound: row.not_found }
-          counts[src] = row.items.length
-        }
-        setSessions(map)
-        setSavedCounts(counts)
-      })
-      .catch(() => {})
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      console.log('[sessions] user au montage:', user?.id ?? 'NON CONNECTÉ')
+      if (!user) return
+      supabase
+        .from('import_sessions')
+        .select('source, items, total_parsed, not_found')
+        .eq('user_id', user.id)
+        .then(({ data, error }) => {
+          console.log('[sessions] chargées:', data?.length ?? 0, 'erreur:', error?.message ?? null)
+          const map: Partial<Record<Source, ImportSession>> = {}
+          const counts: Partial<Record<Source, number>> = {}
+          for (const row of (data ?? [])) {
+            const src = row.source as Source
+            map[src] = { items: row.items as MatchedItem[], totalParsed: row.total_parsed, notFound: row.not_found as string[] }
+            counts[src] = (row.items as MatchedItem[]).length
+          }
+          setSessions(map)
+          setSavedCounts(counts)
+        })
+    })
   }, [])
 
   // ── File processing ──────────────────────────────────────────────────────
@@ -481,7 +474,15 @@ export default function ImportPage() {
 
     // Sauvegarde en base pour ne pas avoir à re-uploader le CSV
     const session: ImportSession = { items: results, totalParsed: parsed.length, notFound: failed }
-    await apiSaveSession(src, session)
+    const supabaseSave = createClient()
+    const { data: { user: saveUser } } = await supabaseSave.auth.getUser()
+    if (saveUser) {
+      const { error: saveErr } = await supabaseSave.from('import_sessions').upsert(
+        { user_id: saveUser.id, source: src, items: results, total_parsed: parsed.length, not_found: failed, saved_at: new Date().toISOString() },
+        { onConflict: 'user_id,source' }
+      )
+      console.log('[sessions] sauvegardé:', src, 'erreur:', saveErr?.message ?? null)
+    }
     setSessions(prev => ({ ...prev, [src]: session }))
     setSavedCounts(prev => ({ ...prev, [src]: results.length }))
 
@@ -510,8 +511,12 @@ export default function ImportPage() {
   }
 
   // Réinitialiser une source (supprime la session en base + revient à l'upload)
-  function resetSource(src: Source) {
-    apiDeleteSession(src)
+  async function resetSource(src: Source) {
+    const supabaseDel = createClient()
+    const { data: { user: delUser } } = await supabaseDel.auth.getUser()
+    if (delUser) {
+      await supabaseDel.from('import_sessions').delete().eq('user_id', delUser.id).eq('source', src)
+    }
     setSessions(prev => { const n = { ...prev }; delete n[src]; return n })
     setSavedCounts(prev => { const n = { ...prev }; delete n[src]; return n })
   }
@@ -567,7 +572,11 @@ export default function ImportPage() {
     setThreshold(Number(settingRow?.value ?? 500))
     // Session supprimée après sauvegarde réussie en base
     if (source) {
-      apiDeleteSession(source)
+      const supabaseDel2 = createClient()
+      const { data: { user: delUser2 } } = await supabaseDel2.auth.getUser()
+      if (delUser2) {
+        await supabaseDel2.from('import_sessions').delete().eq('user_id', delUser2.id).eq('source', source)
+      }
       setSessions(prev => { const n = { ...prev }; delete n[source!]; return n })
       setSavedCounts(prev => { const n = { ...prev }; delete n[source!]; return n })
     }
