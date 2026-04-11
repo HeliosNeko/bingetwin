@@ -91,8 +91,9 @@ export default async function MatchesPage() {
     }
   }
 
-  const jumeaux = all.filter(m => m.match_type === 'jumeau')
-  const cousins  = all.filter(m => m.match_type === 'cousin')
+  // Seuils basés sur le score (match_type n'est pas stocké en base)
+  const jumeaux = all.filter(m => m.score >= 85)
+  const cousins  = all.filter(m => m.score >= 50 && m.score < 85)
 
   if (all.length === 0) {
     return (
