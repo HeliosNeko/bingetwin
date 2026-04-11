@@ -477,11 +477,11 @@ export default function ImportPage() {
     const supabaseSave = createClient()
     const { data: { user: saveUser } } = await supabaseSave.auth.getUser()
     if (saveUser) {
-      const { error: saveErr } = await supabaseSave.from('import_sessions').upsert(
+      const { data: saveData, error: saveErr } = await supabaseSave.from('import_sessions').upsert(
         { user_id: saveUser.id, source: src, items: results, total_parsed: parsed.length, not_found: failed, saved_at: new Date().toISOString() },
         { onConflict: 'user_id,source' }
-      )
-      console.log('[sessions] sauvegardé:', src, 'erreur:', saveErr?.message ?? null)
+      ).select('source, total_parsed')
+      console.log('[save] session sauvegardée:', saveData, 'erreur:', saveErr)
     }
     setSessions(prev => ({ ...prev, [src]: session }))
     setSavedCounts(prev => ({ ...prev, [src]: results.length }))
