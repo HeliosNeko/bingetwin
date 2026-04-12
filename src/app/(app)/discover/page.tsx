@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Film, Tv, BookOpen, Search, Star, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { MediaType } from '@/types'
@@ -20,23 +20,31 @@ export interface MediaItem {
 }
 
 const tabs: { id: Tab; label: string; icon: typeof Film }[] = [
-  { id: 'movie', label: 'Films', icon: Film },
+  { id: 'movie',  label: 'Films',  icon: Film },
   { id: 'series', label: 'Séries', icon: Tv },
-  { id: 'book', label: 'Livres', icon: BookOpen },
+  { id: 'book',   label: 'Livres', icon: BookOpen },
 ]
 
 export default function DiscoverPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('movie')
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<MediaItem[]>([])
-  const [loading, setLoading] = useState(false)
+  const [activeTab, setActiveTab]     = useState<Tab>('movie')
+  const [query, setQuery]             = useState('')
+  const [results, setResults]         = useState<MediaItem[]>([])
+  const [loading, setLoading]         = useState(false)
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null)
+  const [suggestions, setSuggestions] = useState<MediaItem[]>([])
+
+  // Chargement des suggestions au montage — une seule requête, cache 24h côté serveur
+  useEffect(() => {
+    fetch('/api/suggestions')
+      .then(r => r.ok ? r.json() : { items: [] })
+      .then(({ items }) => setSuggestions(items ?? []))
+      .catch(() => {})
+  }, [])
 
   const search = useCallback(async () => {
     if (!query.trim()) return
     setLoading(true)
     setResults([])
-
     try {
       const res = await fetch(`/api/search?type=${activeTab}&q=${encodeURIComponent(query)}`)
       const data = await res.json()
@@ -47,6 +55,8 @@ export default function DiscoverPage() {
       setLoading(false)
     }
   }, [query, activeTab])
+
+  const showSuggestions = !query && results.length === 0 && suggestions.length > 0
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -71,7 +81,7 @@ export default function DiscoverPage() {
         ))}
       </div>
 
-      {/* Search */}
+      {/* Search bar */}
       <div className="flex gap-3 mb-8">
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
@@ -102,7 +112,38 @@ export default function DiscoverPage() {
         </button>
       </div>
 
-      {/* Results */}
+      {/* ── Mosaïque de suggestions (query vide) ───────────────────────── */}
+      {showSuggestions && (
+        <div>
+          <p className="text-sm text-gray-400 mb-4">Voici quelques idées :</p>
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+            {suggestions.map(item => (
+              <button
+                key={`${item.mediaType}-${item.id}`}
+                onClick={() => setSelectedItem(item)}
+                className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden hover:border-violet-500/60 transition-colors text-left w-full focus:outline-none focus:ring-2 focus:ring-violet-500"
+              >
+                <div className="aspect-[2/3] bg-gray-800 relative">
+                  {item.poster ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={item.poster} alt={item.title} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-gray-600">
+                      {item.mediaType === 'book' ? <BookOpen size={24} /> : <Film size={24} />}
+                    </div>
+                  )}
+                </div>
+                <div className="p-2">
+                  <p className="text-xs font-medium line-clamp-2 leading-tight">{item.title}</p>
+                  <p className="text-[10px] text-gray-500 mt-0.5">{item.year}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Résultats de recherche ──────────────────────────────────────── */}
       {results.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
           {results.map(item => (

@@ -3,12 +3,11 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Film, Users, LayoutDashboard, LogOut, Search, Settings, Upload } from 'lucide-react'
+import { Film, Users, LogOut, Search, Settings, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
-  { href: '/dashboard', icon: LayoutDashboard, label: 'Accueil' },
-  { href: '/discover', icon: Search, label: 'Découvrir' },
+  { href: '/discover', icon: Search, label: 'Rechercher' },
   { href: '/profile', icon: Film, label: 'Mon profil' },
   { href: '/matches', icon: Users, label: 'Matches' },
   { href: '/import', icon: Upload, label: 'Importer' },
