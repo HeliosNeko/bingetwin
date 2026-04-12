@@ -26,9 +26,9 @@ const tabs: { id: Tab; label: string; icon: typeof Film }[] = [
   { id: 'book',   label: 'Livres', icon: BookOpen },
 ]
 
-const TARGET    = 12   // nombre de suggestions à afficher
-const MIN_KEEP  = 8    // si moins après filtrage, compléter automatiquement
-const MAX_PAGE  = 8    // pages TMDB disponibles (1-8)
+const TARGET   = 12   // suggestions à afficher
+const MIN_KEEP = 8    // seuil bas → compléter automatiquement
+const MAX_PAGE = 10   // pages TMDB disponibles (1-10)
 
 export default function DiscoverPage() {
   const [activeTab, setActiveTab]       = useState<Tab>('movie')
@@ -40,12 +40,14 @@ export default function DiscoverPage() {
   const [suggLoading, setSuggLoading]   = useState(false)
   const [suggVisible, setSuggVisible]   = useState(true)
 
-  // Set des external_id déjà notés par l'utilisateur (pour filtrage)
-  const ratedIds = useRef<Set<string>>(new Set())
-  // Page courante — pour proposer une page différente à chaque refresh
+  // Favoris déjà notés — chargés une fois, jamais proposés
+  const ratedIds  = useRef<Set<string>>(new Set())
+  // Suggestions déjà proposées dans cette session — pour éviter les répétitions
+  const shownIds  = useRef<Set<string>>(new Set())
+  // Page courante (pour garantir une page différente au prochain refresh)
   const currentPage = useRef(1)
 
-  // ── Récupérer les favoris déjà notés (une seule fois au montage) ────────
+  // ── Charger les favoris notés au montage ────────────────────────────────
   useEffect(() => {
     const supabase = createClient()
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -61,48 +63,67 @@ export default function DiscoverPage() {
     })
   }, [])
 
-  // ── Charger N suggestions en filtrant les déjà-notés ───────────────────
-  const loadSuggestions = useCallback(async (page: number) => {
+  // ── Cœur de la logique : collecter TARGET items sans répétition ─────────
+  const loadSuggestions = useCallback(async (startPage: number) => {
     setSuggLoading(true)
-    setSuggVisible(false)          // fade out
+    setSuggVisible(false)
 
-    try {
+    // Tente de collecter TARGET items non notés / non déjà proposés.
+    // useShownFilter=false → on accepte des doublons de session (fallback).
+    async function tryCollect(useShownFilter: boolean): Promise<MediaItem[]> {
       const collected: MediaItem[] = []
-      const seen = new Set<string>()
-      let p = page
+      const seenInBatch = new Set<string>()  // déduplique entre pages de la même requête
+      let p = startPage
 
-      // Boucle : on complète jusqu'à TARGET items non notés (max 3 pages)
-      while (collected.length < TARGET && p <= page + 2) {
-        const res = await fetch(`/api/suggestions?page=${p}`)
+      for (let attempt = 0; attempt < MAX_PAGE; attempt++) {
+        let res: Response
+        try { res = await fetch(`/api/suggestions?page=${p}`) }
+        catch { break }
         if (!res.ok) break
         const { items }: { items: MediaItem[] } = await res.json()
-        if (!items.length) break
+        if (!items?.length) break
 
         for (const item of items) {
           const key = String(item.id)
-          if (seen.has(key)) continue          // déduplique entre pages
-          if (ratedIds.current.has(key)) continue  // déjà noté
-          seen.add(key)
+          if (seenInBatch.has(key))                         continue  // doublon dans le batch
+          if (ratedIds.current.has(key))                    continue  // déjà noté
+          if (useShownFilter && shownIds.current.has(key))  continue  // déjà proposé
+          seenInBatch.add(key)
           collected.push(item)
-          if (collected.length >= TARGET) break
+          if (collected.length >= TARGET) return collected
         }
 
-        // Si après filtrage on a moins de MIN_KEEP, on essaie la page suivante
-        if (collected.length >= MIN_KEEP) break
-        p++
+        if (collected.length >= MIN_KEEP) break  // assez, on s'arrête
+
+        // Pas assez → page suivante en bouclant dans 1-MAX_PAGE
+        p = (p % MAX_PAGE) + 1
       }
 
-      setSuggestions(collected.slice(0, TARGET))
+      return collected
+    }
+
+    try {
+      let items = await tryCollect(true)
+
+      // Épuisé les pages sans remplir MIN_KEEP → réinitialise la liste "déjà vu"
+      if (items.length < MIN_KEEP) {
+        shownIds.current = new Set()
+        items = await tryCollect(false)
+      }
+
+      const final = items.slice(0, TARGET)
+      setSuggestions(final)
+      // Mémoriser ce qu'on vient de proposer
+      for (const item of final) shownIds.current.add(String(item.id))
     } catch {
-      // garde les suggestions précédentes en cas d'erreur réseau
+      // réseau indisponible → garde les suggestions précédentes
     } finally {
       setSuggLoading(false)
-      // Petit délai pour que le fade-out soit visible même si la réponse est rapide
-      setTimeout(() => setSuggVisible(true), 80)  // fade in
+      setTimeout(() => setSuggVisible(true), 100)  // délai pour que le fade-out soit visible
     }
   }, [])
 
-  // Chargement initial : page 1
+  // Chargement initial page 1
   useEffect(() => {
     currentPage.current = 1
     loadSuggestions(1)
@@ -110,7 +131,6 @@ export default function DiscoverPage() {
 
   // ── "Propose-moi autre chose" ────────────────────────────────────────────
   function handleRefresh() {
-    // Choisit une page aléatoire différente de la page courante
     let next = currentPage.current
     while (next === currentPage.current) {
       next = Math.floor(Math.random() * MAX_PAGE) + 1
@@ -138,10 +158,10 @@ export default function DiscoverPage() {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">Découvrir</h1>
+      <h1 className="text-2xl font-bold mb-4">Découvrir</h1>
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-4">
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -160,7 +180,7 @@ export default function DiscoverPage() {
       </div>
 
       {/* Search bar */}
-      <div className="flex gap-3 mb-8">
+      <div className="flex gap-3 mb-5">
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
           <input
@@ -190,11 +210,10 @@ export default function DiscoverPage() {
         </button>
       </div>
 
-      {/* ── Mosaïque de suggestions ─────────────────────────────────────── */}
+      {/* ── Mosaïque 3×4 — tient dans l'écran sans scroller ───────────── */}
       {showSuggestions && (
         <div>
-          {/* Header : label + bouton refresh */}
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-3">
             <p className="text-sm text-gray-400">Voici quelques idées :</p>
             <button
               onClick={handleRefresh}
@@ -206,29 +225,34 @@ export default function DiscoverPage() {
             </button>
           </div>
 
-          {/* Grille avec fade-in/out */}
+          {/* Grille 3 colonnes × 4 lignes avec vignettes compactes */}
           <div
-            className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3 transition-opacity duration-300"
+            className="grid grid-cols-3 gap-2 transition-opacity duration-300"
             style={{ opacity: suggVisible ? 1 : 0 }}
           >
             {suggestions.map(item => (
               <button
                 key={`${item.mediaType}-${item.id}`}
                 onClick={() => setSelectedItem(item)}
-                className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden hover:border-violet-500/60 transition-colors text-left w-full focus:outline-none focus:ring-2 focus:ring-violet-500"
+                className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden hover:border-violet-500/60 transition-colors text-left w-full focus:outline-none focus:ring-2 focus:ring-violet-500"
               >
-                <div className="aspect-[2/3] bg-gray-800 relative">
+                {/* Hauteur fixe de l'affiche pour que 4 lignes tiennent à l'écran */}
+                <div className="h-24 bg-gray-800 relative overflow-hidden">
                   {item.poster ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={item.poster} alt={item.title} className="w-full h-full object-cover" />
+                    <img
+                      src={item.poster}
+                      alt={item.title}
+                      className="w-full h-full object-cover object-top"
+                    />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-gray-600">
-                      {item.mediaType === 'book' ? <BookOpen size={24} /> : <Film size={24} />}
+                      {item.mediaType === 'book' ? <BookOpen size={20} /> : <Film size={20} />}
                     </div>
                   )}
                 </div>
-                <div className="p-2">
-                  <p className="text-xs font-medium line-clamp-2 leading-tight">{item.title}</p>
+                <div className="px-2 py-1.5">
+                  <p className="text-[11px] font-medium line-clamp-1 leading-tight">{item.title}</p>
                   <p className="text-[10px] text-gray-500 mt-0.5">{item.year}</p>
                 </div>
               </button>
