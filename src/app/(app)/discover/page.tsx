@@ -45,6 +45,9 @@ export default function DiscoverPage() {
   const [suggestions, setSuggestions]   = useState<MediaItem[]>([])
   const [suggLoading, setSuggLoading]   = useState(false)
   const [suggVisible, setSuggVisible]   = useState(true)
+  const [suggError, setSuggError]       = useState(false)
+  // true une fois les préférences chargées — bloque le premier appel TMDB
+  const [prefsLoaded, setPrefsLoaded]   = useState(false)
 
   // Favoris déjà notés — chargés une fois, jamais proposés
   const ratedIds  = useRef<Set<string>>(new Set())
@@ -72,12 +75,14 @@ export default function DiscoverPage() {
         })
     })
 
-    // Charger les préférences
+    // Charger les préférences — débloquer le premier appel TMDB une fois fait
     fetch('/api/suggestion-preferences')
       .then(r => r.ok ? r.json() : null)
       .then((data: Prefs | null) => {
         if (data) prefsRef.current = data
       })
+      .catch(err => console.error('[prefs] Erreur chargement préférences :', err))
+      .finally(() => setPrefsLoaded(true))
   }, [])
 
   // ── Construit l'URL de l'API suggestions avec les préférences ───────────
@@ -94,6 +99,7 @@ export default function DiscoverPage() {
   const loadSuggestions = useCallback(async (startPage: number) => {
     setSuggLoading(true)
     setSuggVisible(false)
+    setSuggError(false)
 
     async function tryCollect(useShownFilter: boolean): Promise<MediaItem[]> {
       const collected: MediaItem[] = []
@@ -103,8 +109,14 @@ export default function DiscoverPage() {
       for (let attempt = 0; attempt < MAX_PAGE; attempt++) {
         let res: Response
         try { res = await fetch(buildApiUrl(p)) }
-        catch { break }
-        if (!res.ok) break
+        catch (err) {
+          console.error('[suggestions] Erreur réseau page', p, ':', err)
+          break
+        }
+        if (!res.ok) {
+          console.error('[suggestions] Réponse non-OK page', p, ':', res.status)
+          break
+        }
         const { items }: { items: MediaItem[] } = await res.json()
         if (!items?.length) break
 
@@ -135,10 +147,19 @@ export default function DiscoverPage() {
       }
 
       const final = items.slice(0, TARGET)
-      setSuggestions(final)
-      for (const item of final) shownIds.current.add(String(item.id))
-    } catch {
-      // réseau indisponible → garde les suggestions précédentes
+      if (final.length > 0) {
+        // Ne remplacer les suggestions que si on a des résultats
+        setSuggestions(final)
+        for (const item of final) shownIds.current.add(String(item.id))
+      } else {
+        // Aucun résultat (API vide ou tout filtré) → afficher message d'erreur
+        console.warn('[suggestions] Aucun item retourné — suggestions précédentes conservées')
+        setSuggError(true)
+      }
+    } catch (err) {
+      console.error('[suggestions] Erreur inattendue :', err)
+      setSuggError(true)
+      // garde les suggestions précédentes (pas de setSuggestions)
     } finally {
       setSuggLoading(false)
       setTimeout(() => setSuggVisible(true), 100)
@@ -146,11 +167,12 @@ export default function DiscoverPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Chargement initial page 1
+  // Chargement initial : attend que les préférences soient chargées
   useEffect(() => {
+    if (!prefsLoaded) return
     currentPage.current = 1
     loadSuggestions(1)
-  }, [loadSuggestions])
+  }, [prefsLoaded, loadSuggestions])
 
   // ── "Propose-moi autre chose" ────────────────────────────────────────────
   function handleRefresh() {
@@ -177,7 +199,8 @@ export default function DiscoverPage() {
     }
   }, [query, activeTab])
 
-  const showSuggestions = !query && results.length === 0 && (suggestions.length > 0 || suggLoading)
+  // Afficher la section suggestions dès que les prefs sont chargées et qu'on n'est pas en recherche
+  const showSuggestions = !query && results.length === 0 && prefsLoaded && (suggestions.length > 0 || suggLoading || suggError)
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -258,6 +281,17 @@ export default function DiscoverPage() {
               Configurer mes suggestions
             </Link>
           </div>
+
+          {/* Message d'erreur si aucun item chargé */}
+          {suggError && !suggLoading && (
+            <p className="text-sm text-gray-500 text-center py-4">
+              Impossible de charger des suggestions. Vérifie ta connexion ou{' '}
+              <button onClick={handleRefresh} className="text-violet-400 hover:underline">
+                réessaie
+              </button>
+              .
+            </p>
+          )}
 
           {/* Grille 3 colonnes × 4 lignes avec vignettes compactes */}
           <div
