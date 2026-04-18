@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Film, Tv, BookOpen, Search, Star, X, RefreshCw, SlidersHorizontal } from 'lucide-react'
+import { Film, Tv, BookOpen, Search, Star, X, RefreshCw, SlidersHorizontal, Loader2 } from 'lucide-react'
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -44,26 +44,24 @@ export default function DiscoverPage() {
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null)
   const [suggestions, setSuggestions]   = useState<MediaItem[]>([])
   const [suggLoading, setSuggLoading]   = useState(false)
-  const [suggVisible, setSuggVisible]   = useState(true)
-  const [suggError, setSuggError]       = useState(false)
+  const [suggError, setSuggError]       = useState<string | null>(null)
   // true une fois les préférences chargées — bloque le premier appel TMDB
   const [prefsLoaded, setPrefsLoaded]   = useState(false)
 
   // Favoris déjà notés — chargés une fois, jamais proposés
-  const ratedIds  = useRef<Set<string>>(new Set())
+  const ratedIds    = useRef<Set<string>>(new Set())
   // Suggestions déjà proposées dans cette session — pour éviter les répétitions
-  const shownIds  = useRef<Set<string>>(new Set())
+  const shownIds    = useRef<Set<string>>(new Set())
   // Page courante (pour garantir une page différente au prochain refresh)
   const currentPage = useRef(1)
   // Préférences de suggestions
-  const prefsRef = useRef<Prefs>({ genres: [], periods: [], language_groups: [] })
+  const prefsRef    = useRef<Prefs>({ genres: [], periods: [], language_groups: [] })
 
   // ── Charger favoris notés + préférences au montage ──────────────────────
   useEffect(() => {
     const supabase = createClient()
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return
-      // Charger TOUS les favoris notés (pas de limite implicite)
       supabase
         .from('favorites')
         .select('external_id')
@@ -80,6 +78,7 @@ export default function DiscoverPage() {
       .then(r => r.ok ? r.json() : null)
       .then((data: Prefs | null) => {
         if (data) prefsRef.current = data
+        console.log('[prefs] Préférences chargées :', data ?? 'aucune (défauts utilisés)')
       })
       .catch(err => console.error('[prefs] Erreur chargement préférences :', err))
       .finally(() => setPrefsLoaded(true))
@@ -92,14 +91,17 @@ export default function DiscoverPage() {
     if (prefs.genres.length)          p.set('genres',  prefs.genres.join(','))
     if (prefs.periods.length)         p.set('periods', prefs.periods.join(','))
     if (prefs.language_groups.length) p.set('langs',   prefs.language_groups.join(','))
-    return `/api/suggestions?${p.toString()}`
+    const url = `/api/suggestions?${p.toString()}`
+    console.log('[suggestions] Appel TMDB :', url)
+    return url
   }
 
   // ── Cœur de la logique : collecter TARGET items sans répétition ─────────
   const loadSuggestions = useCallback(async (startPage: number) => {
     setSuggLoading(true)
-    setSuggVisible(false)
-    setSuggError(false)
+    setSuggError(null)
+    // NE PAS vider suggestions ni les rendre invisibles —
+    // les anciennes restent affichées pendant le chargement
 
     async function tryCollect(useShownFilter: boolean): Promise<MediaItem[]> {
       const collected: MediaItem[] = []
@@ -108,29 +110,39 @@ export default function DiscoverPage() {
 
       for (let attempt = 0; attempt < MAX_PAGE; attempt++) {
         let res: Response
-        try { res = await fetch(buildApiUrl(p)) }
-        catch (err) {
+        try {
+          res = await fetch(buildApiUrl(p))
+        } catch (err) {
           console.error('[suggestions] Erreur réseau page', p, ':', err)
           break
         }
         if (!res.ok) {
-          console.error('[suggestions] Réponse non-OK page', p, ':', res.status)
+          console.error('[suggestions] Réponse non-OK page', p, ':', res.status, res.statusText)
           break
         }
-        const { items }: { items: MediaItem[] } = await res.json()
-        if (!items?.length) break
+
+        let parsed: { items?: MediaItem[] }
+        try {
+          parsed = await res.json()
+        } catch (err) {
+          console.error('[suggestions] Impossible de parser le JSON page', p, ':', err)
+          break
+        }
+
+        const items = parsed.items ?? []
+        console.log(`[suggestions] Page ${p} : ${items.length} items reçus`)
+        if (!items.length) break
 
         for (const item of items) {
           const key = String(item.id)
-          if (seenInBatch.has(key))                         continue  // doublon dans le batch
-          if (ratedIds.current.has(key))                    continue  // déjà noté
-          if (useShownFilter && shownIds.current.has(key))  continue  // déjà proposé
+          if (seenInBatch.has(key))                         continue
+          if (ratedIds.current.has(key))                    continue
+          if (useShownFilter && shownIds.current.has(key))  continue
           seenInBatch.add(key)
           collected.push(item)
           if (collected.length >= TARGET) return collected
         }
 
-        // Pas assez → page suivante en bouclant dans 1-MAX_PAGE
         p = (p % MAX_PAGE) + 1
       }
 
@@ -140,29 +152,28 @@ export default function DiscoverPage() {
     try {
       let items = await tryCollect(true)
 
-      // Épuisé les pages sans remplir TARGET → réinitialise la liste "déjà vu"
       if (items.length < TARGET) {
+        console.log('[suggestions] Moins de TARGET items — réinitialisation shownIds')
         shownIds.current = new Set()
         items = await tryCollect(false)
       }
 
       const final = items.slice(0, TARGET)
+      console.log(`[suggestions] Final : ${final.length} items`)
+
       if (final.length > 0) {
-        // Ne remplacer les suggestions que si on a des résultats
         setSuggestions(final)
         for (const item of final) shownIds.current.add(String(item.id))
       } else {
-        // Aucun résultat (API vide ou tout filtré) → afficher message d'erreur
-        console.warn('[suggestions] Aucun item retourné — suggestions précédentes conservées')
-        setSuggError(true)
+        console.warn('[suggestions] Aucun item retourné après toutes les tentatives')
+        setSuggError('Aucune suggestion disponible. Modifie tes préférences ou réessaie.')
+        // Conserve les suggestions précédentes si elles existent
       }
     } catch (err) {
-      console.error('[suggestions] Erreur inattendue :', err)
-      setSuggError(true)
-      // garde les suggestions précédentes (pas de setSuggestions)
+      console.error('[suggestions] Erreur inattendue dans loadSuggestions :', err)
+      setSuggError('Impossible de charger les suggestions. Réessaie.')
     } finally {
       setSuggLoading(false)
-      setTimeout(() => setSuggVisible(true), 100)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -177,8 +188,10 @@ export default function DiscoverPage() {
   // ── "Propose-moi autre chose" ────────────────────────────────────────────
   function handleRefresh() {
     let next = currentPage.current
-    while (next === currentPage.current) {
+    let attempts = 0
+    while (next === currentPage.current && attempts < 20) {
       next = Math.floor(Math.random() * MAX_PAGE) + 1
+      attempts++
     }
     currentPage.current = next
     loadSuggestions(next)
@@ -192,15 +205,16 @@ export default function DiscoverPage() {
       const res = await fetch(`/api/search?type=${activeTab}&q=${encodeURIComponent(query)}`)
       const data = await res.json()
       setResults(data.results ?? [])
-    } catch {
-      console.error('Search failed')
+    } catch (err) {
+      console.error('[search] Erreur :', err)
     } finally {
       setLoading(false)
     }
   }, [query, activeTab])
 
-  // Afficher la section suggestions dès que les prefs sont chargées et qu'on n'est pas en recherche
-  const showSuggestions = !query && results.length === 0 && prefsLoaded && (suggestions.length > 0 || suggLoading || suggError)
+  // La section suggestions est visible dès que les prefs sont chargées
+  // et qu'on n'est pas en mode recherche
+  const showSuggestions = !query && results.length === 0 && prefsLoaded
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -256,7 +270,7 @@ export default function DiscoverPage() {
         </button>
       </div>
 
-      {/* ── Mosaïque 3×4 — tient dans l'écran sans scroller ───────────── */}
+      {/* ── Mosaïque de suggestions ────────────────────────────────────── */}
       {showSuggestions && (
         <div>
           <div className="flex items-center justify-between mb-1">
@@ -282,50 +296,65 @@ export default function DiscoverPage() {
             </Link>
           </div>
 
-          {/* Message d'erreur si aucun item chargé */}
-          {suggError && !suggLoading && (
-            <p className="text-sm text-gray-500 text-center py-4">
-              Impossible de charger des suggestions. Vérifie ta connexion ou{' '}
-              <button onClick={handleRefresh} className="text-violet-400 hover:underline">
-                réessaie
-              </button>
-              .
-            </p>
+          {/* Loader initial (avant le premier lot de suggestions) */}
+          {suggLoading && suggestions.length === 0 && (
+            <div className="flex justify-center py-12">
+              <Loader2 className="animate-spin text-violet-400" size={28} />
+            </div>
           )}
 
-          {/* Grille 3 colonnes × 4 lignes avec vignettes compactes */}
-          <div
-            className="grid grid-cols-3 gap-2 transition-opacity duration-300"
-            style={{ opacity: suggVisible ? 1 : 0 }}
-          >
-            {suggestions.map(item => (
+          {/* Message d'erreur (avec bouton réessayer) */}
+          {suggError && (
+            <div className="text-center py-4">
+              <p className="text-sm text-gray-500">{suggError}</p>
               <button
-                key={`${item.mediaType}-${item.id}`}
-                onClick={() => setSelectedItem(item)}
-                className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden hover:border-violet-500/60 transition-colors text-left w-full focus:outline-none focus:ring-2 focus:ring-violet-500"
+                onClick={handleRefresh}
+                className="mt-2 text-xs text-violet-400 hover:text-violet-300 underline"
               >
-                {/* Hauteur fixe de l'affiche pour que 4 lignes tiennent à l'écran */}
-                <div className="h-24 bg-gray-800 relative overflow-hidden">
-                  {item.poster ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={item.poster}
-                      alt={item.title}
-                      className="w-full h-full object-cover object-top"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-600">
-                      {item.mediaType === 'book' ? <BookOpen size={20} /> : <Film size={20} />}
-                    </div>
-                  )}
-                </div>
-                <div className="px-2 py-1.5">
-                  <p className="text-[11px] font-medium line-clamp-1 leading-tight">{item.title}</p>
-                  <p className="text-[10px] text-gray-500 mt-0.5">{item.year}</p>
-                </div>
+                Réessayer
               </button>
-            ))}
-          </div>
+            </div>
+          )}
+
+          {/* Grille 3 colonnes × 4 lignes — toujours visible, spinner en overlay pendant refresh */}
+          {suggestions.length > 0 && (
+            <div className="relative">
+              {/* Overlay spinner pendant le refresh (sans cacher la grille) */}
+              {suggLoading && (
+                <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-gray-950/50 backdrop-blur-[1px]">
+                  <Loader2 className="animate-spin text-violet-400" size={28} />
+                </div>
+              )}
+              <div className="grid grid-cols-3 gap-2">
+                {suggestions.map(item => (
+                  <button
+                    key={`${item.mediaType}-${item.id}`}
+                    onClick={() => !suggLoading && setSelectedItem(item)}
+                    className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden hover:border-violet-500/60 transition-colors text-left w-full focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  >
+                    <div className="h-24 bg-gray-800 relative overflow-hidden">
+                      {item.poster ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={item.poster}
+                          alt={item.title}
+                          className="w-full h-full object-cover object-top"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-gray-600">
+                          {item.mediaType === 'book' ? <BookOpen size={20} /> : <Film size={20} />}
+                        </div>
+                      )}
+                    </div>
+                    <div className="px-2 py-1.5">
+                      <p className="text-[11px] font-medium line-clamp-1 leading-tight">{item.title}</p>
+                      <p className="text-[10px] text-gray-500 mt-0.5">{item.year}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
