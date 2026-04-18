@@ -45,6 +45,17 @@ function capitalize(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
+function getMediaUrl(mediaType: string, externalId: string): string | null {
+  if (mediaType === 'movie')  return `https://www.themoviedb.org/movie/${externalId}`
+  if (mediaType === 'series') return `https://www.themoviedb.org/tv/${externalId}`
+  if (mediaType === 'book') {
+    // external_id peut être "/works/OL123W" ou "OL123W"
+    const path = externalId.startsWith('/') ? externalId : `/works/${externalId}`
+    return `https://openlibrary.org${path}`
+  }
+  return null
+}
+
 export default async function ProfilePage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -143,7 +154,21 @@ export default async function ProfilePage() {
                   >
                     {/* Title + meta */}
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{fav.title}</p>
+                      {(() => {
+                        const url = getMediaUrl(fav.media_type, fav.external_id)
+                        return url ? (
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm font-medium truncate block hover:text-violet-400 transition-colors"
+                          >
+                            {fav.title}
+                          </a>
+                        ) : (
+                          <p className="text-sm font-medium truncate">{fav.title}</p>
+                        )
+                      })()}
                       <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${badge.color}`}>
                           {badge.label}

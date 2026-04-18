@@ -35,7 +35,7 @@ function expandLanguages(group: string): string[] {
   if (group === 'fr')       return ['fr']
   if (group === 'european') return EUROPEAN_LANGS
   if (group === 'asian')    return ASIAN_LANGS
-  return []  // vide = toutes les langues (pas de filtre)
+  return []
 }
 
 // ── Preferences parsing ───────────────────────────────────────────────────────
@@ -45,18 +45,24 @@ function parsePrefs(sp: URLSearchParams): Prefs {
   const raw = sp.get('genres') ?? ''
   const genres = raw ? raw.split(',').map(Number).filter(Boolean) : []
 
-  // period → dateGte
-  const period = sp.get('period') ?? 'all'
+  // periods (comma-separated) → dateGte: on prend la fenêtre la plus large
+  const periodsRaw = sp.get('periods') ?? ''
+  const periods = periodsRaw ? periodsRaw.split(',').filter(Boolean) : []
   let dateGte: string | undefined
-  if (period !== 'all') {
+  if (periods.length > 0) {
     const d = new Date()
-    if (period === 'year')   d.setFullYear(d.getFullYear() - 1)
-    if (period === '5years') d.setFullYear(d.getFullYear() - 5)
-    if (period === '20years') d.setFullYear(d.getFullYear() - 20)
+    if (periods.includes('20years'))     d.setFullYear(d.getFullYear() - 20)
+    else if (periods.includes('5years')) d.setFullYear(d.getFullYear() - 5)
+    else if (periods.includes('year'))   d.setFullYear(d.getFullYear() - 1)
     dateGte = d.toISOString().slice(0, 10)
   }
 
-  const languages = expandLanguages(sp.get('lang') ?? 'all')
+  // langs (comma-separated group names) → liste de codes ISO
+  const langsRaw = sp.get('langs') ?? ''
+  const langGroups = langsRaw ? langsRaw.split(',').filter(Boolean) : []
+  const languages = langGroups.length
+    ? [...new Set(langGroups.flatMap(expandLanguages))]
+    : []
 
   return { dateGte, genres, languages }
 }
@@ -114,7 +120,6 @@ async function fetchCategory(
     minVoteCount: isClassic ? 5000 : 20,
   }
 
-  // Si pas de filtre de langue → un seul appel
   const langs = prefs.languages.length ? prefs.languages : ['']
 
   const responses = await Promise.all(
@@ -136,7 +141,6 @@ async function fetchCategory(
     }
   }
 
-  // 10 par type de contenu pour avoir 40 items total avant filtrage client
   const mediaType = type === 'tv' ? 'series' : 'movie'
   return all.slice(0, 10).map(r => toItem(r, mediaType))
 }
@@ -156,10 +160,9 @@ export async function GET(req: NextRequest) {
       fetchCategory('tv',    'vote_average.desc', page, prefs, true),
     ])
 
-    const recent  = [...recentMovies,  ...recentSeries]   // 20 items max
-    const classic = [...classicMovies, ...classicSeries]  // 20 items max
+    const recent  = [...recentMovies,  ...recentSeries]
+    const classic = [...classicMovies, ...classicSeries]
 
-    // Interleave récent / classique pour varier l'affichage
     const items: MediaItem[] = []
     const len = Math.max(recent.length, classic.length)
     for (let i = 0; i < len; i++) {
@@ -167,7 +170,7 @@ export async function GET(req: NextRequest) {
       if (i < classic.length) items.push(classic[i])
     }
 
-    return NextResponse.json({ items })  // jusqu'à 40 items
+    return NextResponse.json({ items })
   } catch {
     return NextResponse.json({ items: [] })
   }

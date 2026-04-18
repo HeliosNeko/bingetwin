@@ -9,7 +9,7 @@ import Link from 'next/link'
 const GENRES = [
   { id: 28,    label: 'Action' },
   { id: 12,    label: 'Aventure' },
-  { id: 16,    label: 'Animation' },
+  { id: 16,    label: 'Animation / Dessin animé' },
   { id: 35,    label: 'Comédie' },
   { id: 80,    label: 'Crime' },
   { id: 99,    label: 'Documentaire' },
@@ -30,34 +30,76 @@ const GENRES = [
 const ALL_GENRE_IDS = GENRES.map(g => g.id)
 
 const PERIODS = [
-  { value: 'year',    label: 'Cette année (12 derniers mois)' },
-  { value: '5years',  label: 'Depuis 5 ans' },
-  { value: '20years', label: 'Depuis 20 ans' },
-  { value: 'all',     label: 'Toutes périodes' },
+  { value: 'year',    label: 'Cette année',   sub: '12 derniers mois' },
+  { value: '5years',  label: 'Depuis 5 ans',  sub: undefined },
+  { value: '20years', label: 'Depuis 20 ans', sub: undefined },
 ]
 
 const LANG_GROUPS = [
-  { value: 'en',       label: 'Anglais' },
-  { value: 'fr',       label: 'Français' },
-  { value: 'european', label: 'Autres langues européennes', sub: 'es, de, it, pt, nl, pl, sv, da…' },
-  { value: 'asian',    label: 'Langues asiatiques',         sub: 'ja, ko, zh, hi, th, id…' },
-  { value: 'all',      label: 'Toutes les langues' },
+  { value: 'en',       label: 'Anglais',                        sub: undefined },
+  { value: 'fr',       label: 'Français',                       sub: undefined },
+  { value: 'european', label: 'Autres langues européennes',     sub: 'es, de, it, pt, nl, pl, sv, da…' },
+  { value: 'asian',    label: 'Langues asiatiques',             sub: 'ja, ko, zh, hi, th, id…' },
 ]
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Prefs {
-  genres:         number[]
-  period:         string
-  language_group: string
+  genres:          number[]
+  periods:         string[]
+  language_groups: string[]
 }
 
-const DEFAULT_PREFS: Prefs = { genres: [], period: 'all', language_group: 'all' }
+const DEFAULT_PREFS: Prefs = { genres: [], periods: [], language_groups: [] }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function toggle<T>(arr: T[], value: T): T[] {
+  return arr.includes(value) ? arr.filter(v => v !== value) : [...arr, value]
+}
+
+function CheckboxItem({
+  active,
+  onClick,
+  label,
+  sub,
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+  sub?: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition-all ${
+        active
+          ? 'bg-violet-900/40 border-violet-600/60'
+          : 'bg-gray-900 border-gray-800 hover:border-gray-600'
+      }`}
+    >
+      <div className={`w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border ${
+        active ? 'bg-violet-600 border-violet-600' : 'border-gray-600'
+      }`}>
+        {active && <Check size={10} className="text-white" />}
+      </div>
+      <div>
+        <p className={`text-sm ${active ? 'text-violet-200' : 'text-gray-400'}`}>{label}</p>
+        {sub && <p className="text-[11px] text-gray-600 mt-0.5">{sub}</p>}
+      </div>
+    </button>
+  )
+}
+
+function selectionLabel(count: number, total: number, singular: string, plural: string): string {
+  if (count === 0) return `Tous (${total})`
+  return `${count} ${count > 1 ? plural : singular} sélectionné${count > 1 ? 's' : ''}`
+}
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function SuggestionSettingsPage() {
-  const [prefs, setPrefs]   = useState<Prefs>(DEFAULT_PREFS)
+  const [prefs, setPrefs]     = useState<Prefs>(DEFAULT_PREFS)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving]   = useState(false)
   const [saved, setSaved]     = useState(false)
@@ -69,21 +111,24 @@ export default function SuggestionSettingsPage() {
       .finally(() => setLoading(false))
   }, [])
 
+  // ── Genres ────────────────────────────────────────────────────────────────
   function toggleGenre(id: number) {
-    setPrefs(prev => {
-      const has = prev.genres.includes(id)
-      const next = has ? prev.genres.filter(g => g !== id) : [...prev.genres, id]
-      return { ...prev, genres: next }
-    })
+    setPrefs(prev => ({ ...prev, genres: toggle(prev.genres, id) }))
   }
-
-  function selectAllGenres()  { setPrefs(prev => ({ ...prev, genres: [] })) }
-  function deselectAllGenres(){ setPrefs(prev => ({ ...prev, genres: ALL_GENRE_IDS })) }
-
-  // genres vide = "tous" (par défaut), genres non vide = sélection partielle
   const isGenreActive = (id: number) =>
     prefs.genres.length === 0 || prefs.genres.includes(id)
 
+  // ── Périodes ──────────────────────────────────────────────────────────────
+  function togglePeriod(value: string) {
+    setPrefs(prev => ({ ...prev, periods: toggle(prev.periods, value) }))
+  }
+
+  // ── Langues ───────────────────────────────────────────────────────────────
+  function toggleLang(value: string) {
+    setPrefs(prev => ({ ...prev, language_groups: toggle(prev.language_groups, value) }))
+  }
+
+  // ── Save ──────────────────────────────────────────────────────────────────
   async function handleSave() {
     setSaving(true)
     try {
@@ -122,19 +167,25 @@ export default function SuggestionSettingsPage() {
 
       {/* ── Genres ────────────────────────────────────────────────────── */}
       <section className="mb-8">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-2">
           <h2 className="font-semibold">Genres</h2>
           <div className="flex gap-3 text-xs">
-            <button onClick={selectAllGenres} className="text-violet-400 hover:text-violet-300 transition-colors">
+            <button
+              onClick={() => setPrefs(prev => ({ ...prev, genres: [] }))}
+              className="text-violet-400 hover:text-violet-300 transition-colors"
+            >
               Tous
             </button>
-            <button onClick={deselectAllGenres} className="text-gray-500 hover:text-gray-300 transition-colors">
+            <button
+              onClick={() => setPrefs(prev => ({ ...prev, genres: ALL_GENRE_IDS }))}
+              className="text-gray-500 hover:text-gray-300 transition-colors"
+            >
               Aucun
             </button>
           </div>
         </div>
         <p className="text-xs text-gray-500 mb-3">
-          {prefs.genres.length === 0 ? 'Tous les genres sélectionnés' : `${prefs.genres.length} genre${prefs.genres.length > 1 ? 's' : ''} sélectionné${prefs.genres.length > 1 ? 's' : ''}`}
+          {selectionLabel(prefs.genres.length === 0 ? 0 : ALL_GENRE_IDS.length - (ALL_GENRE_IDS.length - prefs.genres.length), ALL_GENRE_IDS.length, 'genre', 'genres')}
         </p>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {GENRES.map(g => {
@@ -163,61 +214,62 @@ export default function SuggestionSettingsPage() {
 
       {/* ── Période ───────────────────────────────────────────────────── */}
       <section className="mb-8">
-        <h2 className="font-semibold mb-3">Période</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="font-semibold">Période</h2>
+          {prefs.periods.length > 0 && (
+            <button
+              onClick={() => setPrefs(prev => ({ ...prev, periods: [] }))}
+              className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
+            >
+              Toutes
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          {prefs.periods.length === 0
+            ? 'Toutes les périodes'
+            : `${prefs.periods.length} période${prefs.periods.length > 1 ? 's' : ''} sélectionnée${prefs.periods.length > 1 ? 's' : ''}`}
+        </p>
         <div className="space-y-2">
           {PERIODS.map(p => (
-            <button
+            <CheckboxItem
               key={p.value}
-              onClick={() => setPrefs(prev => ({ ...prev, period: p.value }))}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition-all text-sm ${
-                prefs.period === p.value
-                  ? 'bg-violet-900/40 border-violet-600/60 text-violet-200'
-                  : 'bg-gray-900 border-gray-800 text-gray-400 hover:border-gray-600'
-              }`}
-            >
-              <div className={`w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
-                prefs.period === p.value ? 'border-violet-500' : 'border-gray-600'
-              }`}>
-                {prefs.period === p.value && (
-                  <div className="w-2 h-2 rounded-full bg-violet-500" />
-                )}
-              </div>
-              {p.label}
-            </button>
+              active={prefs.periods.includes(p.value)}
+              onClick={() => togglePeriod(p.value)}
+              label={p.label}
+              sub={p.sub}
+            />
           ))}
         </div>
       </section>
 
       {/* ── Langue originale ──────────────────────────────────────────── */}
       <section className="mb-8">
-        <h2 className="font-semibold mb-3">Langue originale</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="font-semibold">Langue originale</h2>
+          {prefs.language_groups.length > 0 && (
+            <button
+              onClick={() => setPrefs(prev => ({ ...prev, language_groups: [] }))}
+              className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
+            >
+              Toutes
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          {prefs.language_groups.length === 0
+            ? 'Toutes les langues'
+            : `${prefs.language_groups.length} groupe${prefs.language_groups.length > 1 ? 's' : ''} sélectionné${prefs.language_groups.length > 1 ? 's' : ''}`}
+        </p>
         <div className="space-y-2">
           {LANG_GROUPS.map(l => (
-            <button
+            <CheckboxItem
               key={l.value}
-              onClick={() => setPrefs(prev => ({ ...prev, language_group: l.value }))}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition-all ${
-                prefs.language_group === l.value
-                  ? 'bg-violet-900/40 border-violet-600/60'
-                  : 'bg-gray-900 border-gray-800 hover:border-gray-600'
-              }`}
-            >
-              <div className={`w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
-                prefs.language_group === l.value ? 'border-violet-500' : 'border-gray-600'
-              }`}>
-                {prefs.language_group === l.value && (
-                  <div className="w-2 h-2 rounded-full bg-violet-500" />
-                )}
-              </div>
-              <div>
-                <p className={`text-sm ${prefs.language_group === l.value ? 'text-violet-200' : 'text-gray-400'}`}>
-                  {l.label}
-                </p>
-                {l.sub && (
-                  <p className="text-[11px] text-gray-600 mt-0.5">{l.sub}</p>
-                )}
-              </div>
-            </button>
+              active={prefs.language_groups.includes(l.value)}
+              onClick={() => toggleLang(l.value)}
+              label={l.label}
+              sub={l.sub}
+            />
           ))}
         </div>
       </section>

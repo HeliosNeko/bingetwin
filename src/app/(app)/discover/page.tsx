@@ -22,9 +22,9 @@ export interface MediaItem {
 }
 
 interface Prefs {
-  genres:         number[]
-  period:         string
-  language_group: string
+  genres:          number[]
+  periods:         string[]
+  language_groups: string[]
 }
 
 const tabs: { id: Tab; label: string; icon: typeof Film }[] = [
@@ -53,7 +53,7 @@ export default function DiscoverPage() {
   // Page courante (pour garantir une page différente au prochain refresh)
   const currentPage = useRef(1)
   // Préférences de suggestions
-  const prefsRef = useRef<Prefs>({ genres: [], period: 'all', language_group: 'all' })
+  const prefsRef = useRef<Prefs>({ genres: [], periods: [], language_groups: [] })
 
   // ── Charger favoris notés + préférences au montage ──────────────────────
   useEffect(() => {
@@ -84,9 +84,9 @@ export default function DiscoverPage() {
   function buildApiUrl(page: number): string {
     const p = new URLSearchParams({ page: String(page) })
     const prefs = prefsRef.current
-    if (prefs.genres.length)              p.set('genres', prefs.genres.join(','))
-    if (prefs.period !== 'all')           p.set('period', prefs.period)
-    if (prefs.language_group !== 'all')   p.set('lang', prefs.language_group)
+    if (prefs.genres.length)          p.set('genres',  prefs.genres.join(','))
+    if (prefs.periods.length)         p.set('periods', prefs.periods.join(','))
+    if (prefs.language_groups.length) p.set('langs',   prefs.language_groups.join(','))
     return `/api/suggestions?${p.toString()}`
   }
 
