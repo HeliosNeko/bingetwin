@@ -137,7 +137,8 @@ async function fetchCategory(
   }
 
   // 10 par type de contenu pour avoir 40 items total avant filtrage client
-  return all.slice(0, 10).map(r => toItem(r, type))
+  const mediaType = type === 'tv' ? 'series' : 'movie'
+  return all.slice(0, 10).map(r => toItem(r, mediaType))
 }
 
 // ── Route handler ─────────────────────────────────────────────────────────────
