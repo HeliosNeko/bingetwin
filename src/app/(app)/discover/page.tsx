@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Film, Tv, BookOpen, Search, Star, X, RefreshCw } from 'lucide-react'
+import { Film, Tv, BookOpen, Search, Star, X, RefreshCw, SlidersHorizontal } from 'lucide-react'
+import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import type { MediaType } from '@/types'
@@ -20,6 +21,12 @@ export interface MediaItem {
   mediaType: MediaType
 }
 
+interface Prefs {
+  genres:         number[]
+  period:         string
+  language_group: string
+}
+
 const tabs: { id: Tab; label: string; icon: typeof Film }[] = [
   { id: 'movie',  label: 'Films',  icon: Film },
   { id: 'series', label: 'Séries', icon: Tv },
@@ -27,7 +34,6 @@ const tabs: { id: Tab; label: string; icon: typeof Film }[] = [
 ]
 
 const TARGET   = 12   // suggestions à afficher
-const MIN_KEEP = 8    // seuil bas → compléter automatiquement
 const MAX_PAGE = 10   // pages TMDB disponibles (1-10)
 
 export default function DiscoverPage() {
@@ -46,38 +52,57 @@ export default function DiscoverPage() {
   const shownIds  = useRef<Set<string>>(new Set())
   // Page courante (pour garantir une page différente au prochain refresh)
   const currentPage = useRef(1)
+  // Préférences de suggestions
+  const prefsRef = useRef<Prefs>({ genres: [], period: 'all', language_group: 'all' })
 
-  // ── Charger les favoris notés au montage ────────────────────────────────
+  // ── Charger favoris notés + préférences au montage ──────────────────────
   useEffect(() => {
     const supabase = createClient()
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return
+      // Charger TOUS les favoris notés (pas de limite implicite)
       supabase
         .from('favorites')
         .select('external_id')
         .eq('user_id', user.id)
         .not('rating', 'is', null)
+        .limit(5000)
         .then(({ data }) => {
           if (data) ratedIds.current = new Set(data.map(f => String(f.external_id)))
         })
     })
+
+    // Charger les préférences
+    fetch('/api/suggestion-preferences')
+      .then(r => r.ok ? r.json() : null)
+      .then((data: Prefs | null) => {
+        if (data) prefsRef.current = data
+      })
   }, [])
+
+  // ── Construit l'URL de l'API suggestions avec les préférences ───────────
+  function buildApiUrl(page: number): string {
+    const p = new URLSearchParams({ page: String(page) })
+    const prefs = prefsRef.current
+    if (prefs.genres.length)              p.set('genres', prefs.genres.join(','))
+    if (prefs.period !== 'all')           p.set('period', prefs.period)
+    if (prefs.language_group !== 'all')   p.set('lang', prefs.language_group)
+    return `/api/suggestions?${p.toString()}`
+  }
 
   // ── Cœur de la logique : collecter TARGET items sans répétition ─────────
   const loadSuggestions = useCallback(async (startPage: number) => {
     setSuggLoading(true)
     setSuggVisible(false)
 
-    // Tente de collecter TARGET items non notés / non déjà proposés.
-    // useShownFilter=false → on accepte des doublons de session (fallback).
     async function tryCollect(useShownFilter: boolean): Promise<MediaItem[]> {
       const collected: MediaItem[] = []
-      const seenInBatch = new Set<string>()  // déduplique entre pages de la même requête
+      const seenInBatch = new Set<string>()
       let p = startPage
 
       for (let attempt = 0; attempt < MAX_PAGE; attempt++) {
         let res: Response
-        try { res = await fetch(`/api/suggestions?page=${p}`) }
+        try { res = await fetch(buildApiUrl(p)) }
         catch { break }
         if (!res.ok) break
         const { items }: { items: MediaItem[] } = await res.json()
@@ -93,8 +118,6 @@ export default function DiscoverPage() {
           if (collected.length >= TARGET) return collected
         }
 
-        if (collected.length >= MIN_KEEP) break  // assez, on s'arrête
-
         // Pas assez → page suivante en bouclant dans 1-MAX_PAGE
         p = (p % MAX_PAGE) + 1
       }
@@ -105,22 +128,22 @@ export default function DiscoverPage() {
     try {
       let items = await tryCollect(true)
 
-      // Épuisé les pages sans remplir MIN_KEEP → réinitialise la liste "déjà vu"
-      if (items.length < MIN_KEEP) {
+      // Épuisé les pages sans remplir TARGET → réinitialise la liste "déjà vu"
+      if (items.length < TARGET) {
         shownIds.current = new Set()
         items = await tryCollect(false)
       }
 
       const final = items.slice(0, TARGET)
       setSuggestions(final)
-      // Mémoriser ce qu'on vient de proposer
       for (const item of final) shownIds.current.add(String(item.id))
     } catch {
       // réseau indisponible → garde les suggestions précédentes
     } finally {
       setSuggLoading(false)
-      setTimeout(() => setSuggVisible(true), 100)  // délai pour que le fade-out soit visible
+      setTimeout(() => setSuggVisible(true), 100)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Chargement initial page 1
@@ -213,7 +236,7 @@ export default function DiscoverPage() {
       {/* ── Mosaïque 3×4 — tient dans l'écran sans scroller ───────────── */}
       {showSuggestions && (
         <div>
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-1">
             <p className="text-sm text-gray-400">Voici quelques idées :</p>
             <button
               onClick={handleRefresh}
@@ -223,6 +246,17 @@ export default function DiscoverPage() {
               <RefreshCw size={13} className={suggLoading ? 'animate-spin' : ''} />
               Propose-moi autre chose
             </button>
+          </div>
+
+          {/* Lien de configuration */}
+          <div className="flex justify-end mb-3">
+            <Link
+              href="/discover/settings"
+              className="flex items-center gap-1 text-[11px] text-gray-600 hover:text-violet-400 transition-colors"
+            >
+              <SlidersHorizontal size={11} />
+              Configurer mes suggestions
+            </Link>
           </div>
 
           {/* Grille 3 colonnes × 4 lignes avec vignettes compactes */}
