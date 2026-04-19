@@ -389,7 +389,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
 
                         {/* Emoji picker */}
                         <div className="flex items-center gap-1.5 flex-1">
-                          {[5, 4, 3, 2, 1].map(v => (
+                          {[1, 2, 3, 4, 5].map(v => (
                             <button
                               key={v}
                               onClick={() => handleRateSeason(season, v)}
