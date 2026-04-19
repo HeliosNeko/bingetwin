@@ -15,6 +15,50 @@ const MEDIA_BADGE: Record<string, { label: string; color: string }> = {
   book:   { label: 'Livre',  color: 'bg-amber-900/80  text-amber-300'  },
 }
 
+// ── Season detection helpers ────────────────────────────────────────────────
+
+/**
+ * Parse an external_id: "1399_s2" → { baseId: "1399", seasonNum: 2 }
+ * Non-season IDs: "1399" → { baseId: "1399", seasonNum: -1 }
+ */
+function parseId(externalId: string): { baseId: string; seasonNum: number } {
+  const m = externalId.match(/^(.+)_s(\d+)$/)
+  if (m) return { baseId: m[1], seasonNum: parseInt(m[2]) }
+  return { baseId: externalId, seasonNum: -1 }
+}
+
+/**
+ * Sort favorites so that:
+ * 1. Items are grouped by series (global entry first, then seasons in order)
+ * 2. Groups are ordered by the best rating in the group (descending)
+ */
+function sortWithSeasonGrouping(favs: Favorite[]): Favorite[] {
+  // Compute the max rating per base series ID
+  const groupMaxRating = new Map<string, number>()
+  for (const f of favs) {
+    const { baseId } = parseId(f.external_id)
+    const cur = groupMaxRating.get(baseId) ?? 0
+    groupMaxRating.set(baseId, Math.max(cur, f.rating ?? 0))
+  }
+
+  return [...favs].sort((a, b) => {
+    const pa = parseId(a.external_id)
+    const pb = parseId(b.external_id)
+
+    if (pa.baseId !== pb.baseId) {
+      // Different groups: sort by group's max rating descending
+      const ra = groupMaxRating.get(pa.baseId) ?? 0
+      const rb = groupMaxRating.get(pb.baseId) ?? 0
+      if (rb !== ra) return rb - ra
+      // Tie-break alphabetically by title
+      return a.title.localeCompare(b.title)
+    }
+
+    // Same series: global (-1) first, then by season number asc
+    return pa.seasonNum - pb.seasonNum
+  })
+}
+
 function buildGenreSections(favorites: Favorite[]): [string, Favorite[]][] {
   const rated = favorites.filter(f => f.rating !== null)
   const map = new Map<string, Favorite[]>()
@@ -32,9 +76,8 @@ function buildGenreSections(favorites: Favorite[]): [string, Favorite[]][] {
     }
   }
 
-  const sortByRating = (a: Favorite, b: Favorite) => (b.rating ?? 0) - (a.rating ?? 0)
-  for (const items of map.values()) items.sort(sortByRating)
-  noGenre.sort(sortByRating)
+  for (const items of map.values()) sortWithSeasonGrouping(items).forEach((item, i) => { items[i] = item })
+  sortWithSeasonGrouping(noGenre).forEach((item, i) => { noGenre[i] = item })
 
   const sections = [...map.entries()].sort(([, a], [, b]) => b.length - a.length)
   if (noGenre.length > 0) sections.push(['__no_genre__', noGenre])
@@ -45,11 +88,18 @@ function capitalize(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
+/**
+ * Build the external link URL for a favorite.
+ * Season entries ("1399_s2") link to the season page on TMDB.
+ */
 function getMediaUrl(mediaType: string, externalId: string): string | null {
-  if (mediaType === 'movie')  return `https://www.themoviedb.org/movie/${externalId}`
-  if (mediaType === 'series') return `https://www.themoviedb.org/tv/${externalId}`
+  if (mediaType === 'series') {
+    const m = externalId.match(/^(.+)_s(\d+)$/)
+    if (m) return `https://www.themoviedb.org/tv/${m[1]}/season/${m[2]}`
+    return `https://www.themoviedb.org/tv/${externalId}`
+  }
+  if (mediaType === 'movie') return `https://www.themoviedb.org/movie/${externalId}`
   if (mediaType === 'book') {
-    // external_id peut être "/works/OL123W" ou "OL123W"
     const path = externalId.startsWith('/') ? externalId : `/works/${externalId}`
     return `https://openlibrary.org${path}`
   }
@@ -143,14 +193,18 @@ export default async function ProfilePage() {
             <div className="divide-y divide-gray-800/50">
               {items.map(fav => {
                 const badge = MEDIA_BADGE[fav.media_type]
-                const primaryGenre = (fav.genres ?? [])
-                  .map(g => g.toLowerCase().trim())
-                  .filter(Boolean)[0]
+                const { seasonNum } = parseId(fav.external_id)
+                const isSeason = seasonNum >= 0
+
+                // For season rows, don't repeat the genre tag (already visible from parent)
+                const primaryGenre = isSeason
+                  ? undefined
+                  : (fav.genres ?? []).map(g => g.toLowerCase().trim()).filter(Boolean)[0]
 
                 return (
                   <div
                     key={`${genre}-${fav.id}`}
-                    className="flex items-center gap-3 py-2.5 group"
+                    className={`flex items-center gap-3 py-2.5 group ${isSeason ? 'pl-4 border-l-2 border-gray-800' : ''}`}
                   >
                     {/* Title + meta */}
                     <div className="flex-1 min-w-0">
@@ -170,9 +224,11 @@ export default async function ProfilePage() {
                         )
                       })()}
                       <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${badge.color}`}>
-                          {badge.label}
-                        </span>
+                        {!isSeason && (
+                          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${badge.color}`}>
+                            {badge.label}
+                          </span>
+                        )}
                         {fav.year && (
                           <span className="text-xs text-gray-500">{fav.year}</span>
                         )}

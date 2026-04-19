@@ -5,6 +5,7 @@ import { X, Film, BookOpen, Tv, Star, Check, Loader2, ExternalLink } from 'lucid
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
 import type { MediaType } from '@/types'
+import type { TvSeason } from '@/app/api/tv-seasons/route'
 
 interface MediaItem {
   id: string
@@ -34,6 +35,8 @@ const RATINGS = [
   { value: 1, label: "J'ai détesté",      emoji: '🤮', color: 'hover:bg-red-900/60 hover:border-red-600',       active: 'bg-red-900/60 border-red-600 text-red-300' },
 ]
 
+const SEASON_EMOJIS: Record<number, string> = { 5: '😍', 4: '🙂', 3: '😶', 2: '😬', 1: '🤮' }
+
 interface Props {
   item: MediaItem | null
   onClose: () => void
@@ -52,12 +55,19 @@ export default function MediaDrawer({ item, onClose }: Props) {
   const [resolvedGenres, setResolvedGenres] = useState<string[]>([])
   const [details, setDetails]               = useState<Details>({})
 
+  // Season state
+  const [seasons, setSeasons]               = useState<TvSeason[]>([])
+  const [seasonRatings, setSeasonRatings]   = useState<Record<number, number>>({})
+  const [savingSeasonNum, setSavingSeasonNum] = useState<number | null>(null)
+
   useEffect(() => {
     if (item) {
       setSelectedRating(null)
       setSaved(false)
       setResolvedGenres(item.genres ?? [])
       setDetails({})
+      setSeasons([])
+      setSeasonRatings({})
 
       async function loadExisting() {
         if (!item) return
@@ -65,7 +75,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return
 
-        // Load existing rating
+        // Load global rating
         const { data } = await supabase
           .from('favorites')
           .select('rating')
@@ -78,7 +88,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
           setSaved(true)
         }
 
-        // Fetch details (always for movie/series, for book only if genres missing)
+        // Fetch details + genres
         const needsFetch = item.mediaType !== 'book' || !item.genres || item.genres.length === 0
         if (needsFetch) {
           try {
@@ -94,11 +104,39 @@ export default function MediaDrawer({ item, onClose }: Props) {
                 seasons:  json.seasons,
               })
             }
-          } catch {
-            // silently ignore
-          }
+          } catch { /* ignore */ }
+        }
+
+        // For series: load seasons list + existing season ratings
+        if (item.mediaType === 'series') {
+          try {
+            const [seasonsRes, ratingsRes] = await Promise.all([
+              fetch(`/api/tv-seasons?id=${item.id}`),
+              supabase
+                .from('favorites')
+                .select('external_id, rating')
+                .eq('user_id', user.id)
+                .eq('media_type', 'series')
+                .like('external_id', `${item.id}_s%`),
+            ])
+
+            if (seasonsRes.ok) {
+              const { seasons: seasonList } = await seasonsRes.json()
+              setSeasons(seasonList ?? [])
+            }
+
+            const ratingsMap: Record<number, number> = {}
+            for (const row of ratingsRes.data ?? []) {
+              const match = String(row.external_id).match(/_s(\d+)$/)
+              if (match && row.rating != null) {
+                ratingsMap[parseInt(match[1])] = row.rating
+              }
+            }
+            setSeasonRatings(ratingsMap)
+          } catch { /* ignore */ }
         }
       }
+
       loadExisting()
     }
   }, [item])
@@ -111,6 +149,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
     return () => window.removeEventListener('keydown', handleKey)
   }, [onClose])
 
+  // ── Global series / movie / book rating ─────────────────────────────────
   async function handleRate(value: number) {
     if (!item) return
     setSelectedRating(value)
@@ -121,14 +160,14 @@ export default function MediaDrawer({ item, onClose }: Props) {
     if (!user) { setSaving(false); return }
 
     await supabase.from('favorites').upsert({
-      user_id:    user.id,
-      media_type: item.mediaType,
+      user_id:     user.id,
+      media_type:  item.mediaType,
       external_id: item.id,
-      title:      item.title,
-      poster_url: item.poster,
-      year:       item.year,
-      rating:     value,
-      genres:     resolvedGenres,
+      title:       item.title,
+      poster_url:  item.poster,
+      year:        item.year,
+      rating:      value,
+      genres:      resolvedGenres,
     }, { onConflict: 'user_id,media_type,external_id' })
 
     await supabase.rpc('compute_matches', { target_user_id: user.id })
@@ -156,9 +195,59 @@ export default function MediaDrawer({ item, onClose }: Props) {
     setSaving(false)
   }
 
+  // ── Season rating ────────────────────────────────────────────────────────
+  async function handleRateSeason(season: TvSeason, value: number) {
+    if (!item) return
+    setSavingSeasonNum(season.season_number)
+
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setSavingSeasonNum(null); return }
+
+    const seasonTitle = `${item.title} — ${season.name}`
+    const externalId  = `${item.id}_s${season.season_number}`
+
+    await supabase.from('favorites').upsert({
+      user_id:     user.id,
+      media_type:  'series',
+      external_id: externalId,
+      title:       seasonTitle,
+      poster_url:  item.poster,   // use series poster (season poster not stored separately)
+      year:        season.year,
+      rating:      value,
+      genres:      resolvedGenres,
+    }, { onConflict: 'user_id,media_type,external_id' })
+
+    await supabase.rpc('compute_matches', { target_user_id: user.id })
+
+    setSeasonRatings(prev => ({ ...prev, [season.season_number]: value }))
+    setSavingSeasonNum(null)
+  }
+
+  async function handleClearSeasonRating(seasonNumber: number) {
+    if (!item) return
+    setSavingSeasonNum(seasonNumber)
+
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setSavingSeasonNum(null); return }
+
+    await supabase.from('favorites')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('media_type', 'series')
+      .eq('external_id', `${item.id}_s${seasonNumber}`)
+
+    setSeasonRatings(prev => {
+      const next = { ...prev }
+      delete next[seasonNumber]
+      return next
+    })
+    setSavingSeasonNum(null)
+  }
+
   const MediaIcon = item?.mediaType === 'book' ? BookOpen : item?.mediaType === 'series' ? Tv : Film
 
-  // Build subtitle line: director / creator / country / runtime / seasons
   function buildMeta(): string[] {
     const parts: string[] = []
     if (details.director) parts.push(`Réalisé par ${details.director}`)
@@ -222,7 +311,6 @@ export default function MediaDrawer({ item, onClose }: Props) {
                 <h2 className="font-bold text-lg leading-snug">{item.title}</h2>
                 {item.year && <p className="text-gray-400 text-sm mt-1">{item.year}</p>}
 
-                {/* Director / creator / country / runtime */}
                 {metaParts.length > 0 && (
                   <div className="mt-1.5 space-y-0.5">
                     {metaParts.map((part, i) => (
@@ -231,7 +319,6 @@ export default function MediaDrawer({ item, onClose }: Props) {
                   </div>
                 )}
 
-                {/* TMDB rating */}
                 {item.rating != null && (
                   <div className="flex items-center gap-1 mt-2">
                     <Star size={13} className="text-yellow-400 fill-yellow-400" />
@@ -240,7 +327,6 @@ export default function MediaDrawer({ item, onClose }: Props) {
                   </div>
                 )}
 
-                {/* External link */}
                 {item.mediaType !== 'book' ? (
                   <a
                     href={tmdbUrl(item.mediaType, item.id)}
@@ -283,10 +369,75 @@ export default function MediaDrawer({ item, onClose }: Props) {
               </div>
             )}
 
-            {/* Rating section */}
+            {/* ── Season ratings (series only) ──────────────────────────── */}
+            {item.mediaType === 'series' && seasons.length > 0 && (
+              <div className="px-5 py-5 border-b border-gray-800">
+                <p className="text-sm font-semibold text-gray-300 mb-4">Notes par saison</p>
+                <div className="space-y-3">
+                  {seasons.map(season => {
+                    const currentRating = seasonRatings[season.season_number]
+                    const isSavingSeason = savingSeasonNum === season.season_number
+                    return (
+                      <div key={season.season_number} className="flex items-center gap-3">
+                        {/* Season info */}
+                        <div className="w-28 flex-shrink-0">
+                          <p className="text-xs font-medium text-gray-300 truncate">{season.name}</p>
+                          <p className="text-[10px] text-gray-600 mt-0.5">
+                            {[season.year, season.episode_count ? `${season.episode_count} ép.` : ''].filter(Boolean).join(' · ')}
+                          </p>
+                        </div>
+
+                        {/* Emoji picker */}
+                        <div className="flex items-center gap-1.5 flex-1">
+                          {[5, 4, 3, 2, 1].map(v => (
+                            <button
+                              key={v}
+                              onClick={() => handleRateSeason(season, v)}
+                              disabled={isSavingSeason}
+                              className={cn(
+                                'text-xl leading-none transition-all hover:scale-110 disabled:cursor-wait',
+                                currentRating === v
+                                  ? 'opacity-100 scale-110'
+                                  : 'opacity-30 hover:opacity-80'
+                              )}
+                              title={RATINGS.find(r => r.value === v)?.label}
+                            >
+                              {SEASON_EMOJIS[v]}
+                            </button>
+                          ))}
+
+                          {/* Saving indicator or clear button */}
+                          {isSavingSeason && (
+                            <Loader2 size={13} className="animate-spin text-gray-500 ml-1" />
+                          )}
+                          {currentRating != null && !isSavingSeason && (
+                            <button
+                              onClick={() => handleClearSeasonRating(season.season_number)}
+                              className="ml-1 text-gray-600 hover:text-red-400 transition-colors"
+                              title="Effacer la note de cette saison"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Selected rating badge */}
+                        {currentRating != null && !isSavingSeason && (
+                          <Check size={13} className="text-violet-400 flex-shrink-0" />
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ── Global rating ─────────────────────────────────────────── */}
             <div className="px-5 py-5">
               <p className="text-sm font-semibold text-gray-300 mb-4">
-                {saved ? 'Ta note' : "Qu'en as-tu pensé ?"}
+                {item.mediaType === 'series'
+                  ? saved ? 'Ta note globale' : 'Note globale de la série'
+                  : saved ? 'Ta note' : "Qu'en as-tu pensé ?"}
               </p>
 
               <div className="space-y-3">
@@ -315,7 +466,7 @@ export default function MediaDrawer({ item, onClose }: Props) {
                 })}
               </div>
 
-              {/* Effacer la note (visible seulement si déjà noté) */}
+              {/* Effacer la note globale */}
               {saved && !saving && (
                 <button
                   onClick={handleClearRating}
