@@ -27,6 +27,10 @@ interface Prefs {
   language_groups: string[]
 }
 
+const RATING_EMOJI: Record<number, string> = {
+  5: '😍', 4: '🙂', 3: '😶', 2: '😬', 1: '🤮',
+}
+
 const tabs: { id: Tab; label: string; icon: typeof Film }[] = [
   { id: 'movie',  label: 'Films',  icon: Film },
   { id: 'series', label: 'Séries', icon: Tv },
@@ -45,63 +49,71 @@ export default function DiscoverPage() {
   const [suggestions, setSuggestions]   = useState<MediaItem[]>([])
   const [suggLoading, setSuggLoading]   = useState(false)
   const [suggError, setSuggError]       = useState<string | null>(null)
-  // true une fois les préférences chargées — bloque le premier appel TMDB
   const [prefsLoaded, setPrefsLoaded]   = useState(false)
 
-  // Favoris déjà notés — chargés une fois, jamais proposés
+  // Map external_id → rating (pour afficher l'emoji sur les résultats de recherche)
+  const ratingMap   = useRef<Map<string, number>>(new Map())
+  // Set des ids déjà notés (pour filtrer les suggestions)
   const ratedIds    = useRef<Set<string>>(new Set())
-  // Suggestions déjà proposées dans cette session — pour éviter les répétitions
+  // Suggestions déjà proposées dans cette session (reset à chaque refresh manuel)
   const shownIds    = useRef<Set<string>>(new Set())
-  // Page courante (pour garantir une page différente au prochain refresh)
   const currentPage = useRef(1)
-  // Préférences de suggestions
   const prefsRef    = useRef<Prefs>({ genres: [], periods: [], language_groups: [] })
 
-  // ── Charger favoris notés + préférences au montage ──────────────────────
+  // ── Charger favoris + préférences au montage ─────────────────────────────
   useEffect(() => {
     const supabase = createClient()
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return
       supabase
         .from('favorites')
-        .select('external_id')
+        .select('external_id, rating')
         .eq('user_id', user.id)
         .not('rating', 'is', null)
         .limit(5000)
         .then(({ data }) => {
-          if (data) ratedIds.current = new Set(data.map(f => String(f.external_id)))
+          if (!data) return
+          const newMap = new Map<string, number>()
+          const newSet = new Set<string>()
+          for (const f of data) {
+            const key = String(f.external_id)
+            if (f.rating != null) newMap.set(key, f.rating)
+            newSet.add(key)
+          }
+          ratingMap.current = newMap
+          ratedIds.current  = newSet
         })
     })
 
-    // Charger les préférences — débloquer le premier appel TMDB une fois fait
     fetch('/api/suggestion-preferences')
       .then(r => r.ok ? r.json() : null)
       .then((data: Prefs | null) => {
         if (data) prefsRef.current = data
-        console.log('[prefs] Préférences chargées :', data ?? 'aucune (défauts utilisés)')
+        console.log('[prefs] Préférences chargées :', data ?? 'défauts')
       })
-      .catch(err => console.error('[prefs] Erreur chargement préférences :', err))
+      .catch(err => console.error('[prefs] Erreur :', err))
       .finally(() => setPrefsLoaded(true))
   }, [])
 
-  // ── Construit l'URL de l'API suggestions avec les préférences ───────────
+  // ── Construit l'URL TMDB avec préférences ────────────────────────────────
   function buildApiUrl(page: number): string {
     const p = new URLSearchParams({ page: String(page) })
     const prefs = prefsRef.current
     if (prefs.genres.length)          p.set('genres',  prefs.genres.join(','))
     if (prefs.periods.length)         p.set('periods', prefs.periods.join(','))
     if (prefs.language_groups.length) p.set('langs',   prefs.language_groups.join(','))
-    const url = `/api/suggestions?${p.toString()}`
-    console.log('[suggestions] Appel TMDB :', url)
-    return url
+    return `/api/suggestions?${p.toString()}`
   }
 
-  // ── Cœur de la logique : collecter TARGET items sans répétition ─────────
-  const loadSuggestions = useCallback(async (startPage: number) => {
+  // ── Cœur de la logique : collecter TARGET items ──────────────────────────
+  const loadSuggestions = useCallback(async (startPage: number, resetShown: boolean) => {
     setSuggLoading(true)
     setSuggError(null)
-    // NE PAS vider suggestions ni les rendre invisibles —
-    // les anciennes restent affichées pendant le chargement
+
+    if (resetShown) {
+      // Refresh manuel → on repart de zéro pour éviter d'épuiser le pool
+      shownIds.current = new Set()
+    }
 
     async function tryCollect(useShownFilter: boolean): Promise<MediaItem[]> {
       const collected: MediaItem[] = []
@@ -109,15 +121,16 @@ export default function DiscoverPage() {
       let p = startPage
 
       for (let attempt = 0; attempt < MAX_PAGE; attempt++) {
+        const url = buildApiUrl(p)
         let res: Response
         try {
-          res = await fetch(buildApiUrl(p))
+          res = await fetch(url)
         } catch (err) {
-          console.error('[suggestions] Erreur réseau page', p, ':', err)
+          console.error('[suggestions] Erreur réseau page', p, url, err)
           break
         }
         if (!res.ok) {
-          console.error('[suggestions] Réponse non-OK page', p, ':', res.status, res.statusText)
+          console.error('[suggestions] Réponse non-OK page', p, res.status, url)
           break
         }
 
@@ -125,13 +138,12 @@ export default function DiscoverPage() {
         try {
           parsed = await res.json()
         } catch (err) {
-          console.error('[suggestions] Impossible de parser le JSON page', p, ':', err)
+          console.error('[suggestions] JSON invalide page', p, err)
           break
         }
 
         const items = parsed.items ?? []
-        console.log(`[suggestions] Page ${p} : ${items.length} items reçus`)
-        if (!items.length) break
+        const before = collected.length
 
         for (const item of items) {
           const key = String(item.id)
@@ -140,9 +152,19 @@ export default function DiscoverPage() {
           if (useShownFilter && shownIds.current.has(key))  continue
           seenInBatch.add(key)
           collected.push(item)
-          if (collected.length >= TARGET) return collected
+          if (collected.length >= TARGET) {
+            console.log(`[suggestions] TARGET atteint (page ${p}) : ${collected.length} items`)
+            return collected
+          }
         }
 
+        console.log(
+          `[suggestions] Page ${p} (filter=${useShownFilter}) :`,
+          `${items.length} reçus, ${collected.length - before} retenus,`,
+          `total=${collected.length}`
+        )
+
+        if (!items.length) break
         p = (p % MAX_PAGE) + 1
       }
 
@@ -153,24 +175,24 @@ export default function DiscoverPage() {
       let items = await tryCollect(true)
 
       if (items.length < TARGET) {
-        console.log('[suggestions] Moins de TARGET items — réinitialisation shownIds')
+        console.log('[suggestions] Pool épuisé — reset shownIds et deuxième tentative')
         shownIds.current = new Set()
         items = await tryCollect(false)
       }
 
       const final = items.slice(0, TARGET)
-      console.log(`[suggestions] Final : ${final.length} items`)
+      console.log(`[suggestions] Résultat final : ${final.length} items`)
 
       if (final.length > 0) {
         setSuggestions(final)
         for (const item of final) shownIds.current.add(String(item.id))
       } else {
-        console.warn('[suggestions] Aucun item retourné après toutes les tentatives')
+        console.warn('[suggestions] Aucun item après toutes les tentatives')
         setSuggError('Aucune suggestion disponible. Modifie tes préférences ou réessaie.')
-        // Conserve les suggestions précédentes si elles existent
+        // Les anciennes suggestions restent affichées (pas de setSuggestions([]))
       }
     } catch (err) {
-      console.error('[suggestions] Erreur inattendue dans loadSuggestions :', err)
+      console.error('[suggestions] Erreur inattendue :', err)
       setSuggError('Impossible de charger les suggestions. Réessaie.')
     } finally {
       setSuggLoading(false)
@@ -178,14 +200,14 @@ export default function DiscoverPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Chargement initial : attend que les préférences soient chargées
+  // Chargement initial après que les prefs soient disponibles
   useEffect(() => {
     if (!prefsLoaded) return
     currentPage.current = 1
-    loadSuggestions(1)
+    loadSuggestions(1, false)
   }, [prefsLoaded, loadSuggestions])
 
-  // ── "Propose-moi autre chose" ────────────────────────────────────────────
+  // ── Refresh manuel : nouvelle page + reset shownIds ──────────────────────
   function handleRefresh() {
     let next = currentPage.current
     let attempts = 0
@@ -194,7 +216,7 @@ export default function DiscoverPage() {
       attempts++
     }
     currentPage.current = next
-    loadSuggestions(next)
+    loadSuggestions(next, true)   // ← resetShown=true
   }
 
   const search = useCallback(async () => {
@@ -212,8 +234,6 @@ export default function DiscoverPage() {
     }
   }, [query, activeTab])
 
-  // La section suggestions est visible dès que les prefs sont chargées
-  // et qu'on n'est pas en mode recherche
   const showSuggestions = !query && results.length === 0 && prefsLoaded
 
   return (
@@ -285,7 +305,6 @@ export default function DiscoverPage() {
             </button>
           </div>
 
-          {/* Lien de configuration */}
           <div className="flex justify-end mb-3">
             <Link
               href="/discover/settings"
@@ -296,14 +315,14 @@ export default function DiscoverPage() {
             </Link>
           </div>
 
-          {/* Loader initial (avant le premier lot de suggestions) */}
+          {/* Loader avant le premier lot */}
           {suggLoading && suggestions.length === 0 && (
             <div className="flex justify-center py-12">
               <Loader2 className="animate-spin text-violet-400" size={28} />
             </div>
           )}
 
-          {/* Message d'erreur (avec bouton réessayer) */}
+          {/* Message d'erreur */}
           {suggError && (
             <div className="text-center py-4">
               <p className="text-sm text-gray-500">{suggError}</p>
@@ -316,10 +335,9 @@ export default function DiscoverPage() {
             </div>
           )}
 
-          {/* Grille 3 colonnes × 4 lignes — toujours visible, spinner en overlay pendant refresh */}
+          {/* Grille — reste visible pendant le refresh, overlay spinner par-dessus */}
           {suggestions.length > 0 && (
             <div className="relative">
-              {/* Overlay spinner pendant le refresh (sans cacher la grille) */}
               {suggLoading && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-gray-950/50 backdrop-blur-[1px]">
                   <Loader2 className="animate-spin text-violet-400" size={28} />
@@ -361,34 +379,43 @@ export default function DiscoverPage() {
       {/* ── Résultats de recherche ──────────────────────────────────────── */}
       {results.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-          {results.map(item => (
-            <button
-              key={item.id}
-              onClick={() => setSelectedItem(item)}
-              className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden card-hover text-left w-full focus:outline-none focus:ring-2 focus:ring-violet-500"
-            >
-              <div className="aspect-[2/3] bg-gray-800 relative">
-                {item.poster ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={item.poster} alt={item.title} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-gray-600">
-                    {activeTab === 'book' ? <BookOpen size={32} /> : <Film size={32} />}
-                  </div>
-                )}
-              </div>
-              <div className="p-3">
-                <p className="text-sm font-medium line-clamp-2">{item.title}</p>
-                <p className="text-xs text-gray-500 mt-1">{item.year}</p>
-                {item.rating != null && item.rating > 0 && (
-                  <div className="flex items-center gap-1 mt-1">
-                    <Star size={12} className="text-yellow-400 fill-yellow-400" />
-                    <span className="text-xs text-gray-400">{item.rating.toFixed(1)}</span>
-                  </div>
-                )}
-              </div>
-            </button>
-          ))}
+          {results.map(item => {
+            const userRating = ratingMap.current.get(String(item.id))
+            return (
+              <button
+                key={item.id}
+                onClick={() => setSelectedItem(item)}
+                className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden card-hover text-left w-full focus:outline-none focus:ring-2 focus:ring-violet-500"
+              >
+                <div className="aspect-[2/3] bg-gray-800 relative">
+                  {item.poster ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={item.poster} alt={item.title} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-gray-600">
+                      {activeTab === 'book' ? <BookOpen size={32} /> : <Film size={32} />}
+                    </div>
+                  )}
+                  {/* Emoji de note en overlay bas-droite */}
+                  {userRating != null && (
+                    <div className="absolute bottom-1.5 right-1.5 text-lg leading-none drop-shadow-md">
+                      {RATING_EMOJI[userRating]}
+                    </div>
+                  )}
+                </div>
+                <div className="p-3">
+                  <p className="text-sm font-medium line-clamp-2">{item.title}</p>
+                  <p className="text-xs text-gray-500 mt-1">{item.year}</p>
+                  {item.rating != null && item.rating > 0 && (
+                    <div className="flex items-center gap-1 mt-1">
+                      <Star size={12} className="text-yellow-400 fill-yellow-400" />
+                      <span className="text-xs text-gray-400">{item.rating.toFixed(1)}</span>
+                    </div>
+                  )}
+                </div>
+              </button>
+            )
+          })}
         </div>
       )}
 
