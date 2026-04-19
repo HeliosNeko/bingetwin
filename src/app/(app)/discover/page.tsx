@@ -110,27 +110,36 @@ export default function DiscoverPage() {
     setSuggLoading(true)
     setSuggError(null)
 
-    if (resetShown) {
-      // Refresh manuel → on repart de zéro pour éviter d'épuiser le pool
-      shownIds.current = new Set()
+    if (resetShown) shownIds.current = new Set()
+
+    const activePrefs = prefsRef.current
+    console.log('[suggestions] ── Début chargement ──────────────────────')
+    console.log('[suggestions] Préférences actives :', JSON.stringify(activePrefs))
+    console.log('[suggestions] ratedIds.size =', ratedIds.current.size, '| shownIds.size =', shownIds.current.size)
+
+    // Construit une URL TMDB brute, sans préférences (fallback garanti)
+    function buildDefaultUrl(page: number) {
+      return `/api/suggestions?page=${page}`
     }
 
-    async function tryCollect(useShownFilter: boolean): Promise<MediaItem[]> {
+    async function tryCollect(useShownFilter: boolean, noPrefs = false): Promise<MediaItem[]> {
       const collected: MediaItem[] = []
       const seenInBatch = new Set<string>()
       let p = startPage
 
       for (let attempt = 0; attempt < MAX_PAGE; attempt++) {
-        const url = buildApiUrl(p)
+        const url = noPrefs ? buildDefaultUrl(p) : buildApiUrl(p)
+        console.log(`[suggestions] Appel page ${p} (attempt ${attempt + 1}) :`, url)
+
         let res: Response
         try {
           res = await fetch(url)
         } catch (err) {
-          console.error('[suggestions] Erreur réseau page', p, url, err)
+          console.error('[suggestions] Erreur réseau page', p, err)
           break
         }
         if (!res.ok) {
-          console.error('[suggestions] Réponse non-OK page', p, res.status, url)
+          console.error('[suggestions] HTTP', res.status, 'page', p)
           break
         }
 
@@ -143,6 +152,8 @@ export default function DiscoverPage() {
         }
 
         const items = parsed.items ?? []
+        const nRated = items.filter((i: MediaItem) => ratedIds.current.has(String(i.id))).length
+        const nShown = items.filter((i: MediaItem) => shownIds.current.has(String(i.id))).length
         const before = collected.length
 
         for (const item of items) {
@@ -153,15 +164,16 @@ export default function DiscoverPage() {
           seenInBatch.add(key)
           collected.push(item)
           if (collected.length >= TARGET) {
-            console.log(`[suggestions] TARGET atteint (page ${p}) : ${collected.length} items`)
+            console.log(`[suggestions] ✓ TARGET atteint page ${p} : ${collected.length} items`)
             return collected
           }
         }
 
         console.log(
-          `[suggestions] Page ${p} (filter=${useShownFilter}) :`,
-          `${items.length} reçus, ${collected.length - before} retenus,`,
-          `total=${collected.length}`
+          `[suggestions] Page ${p} : ${items.length} reçus`,
+          `| rated=${nRated} shown=${nShown}`,
+          `| retenus ce tour=${collected.length - before}`,
+          `| total collecté=${collected.length}`
         )
 
         if (!items.length) break
@@ -172,24 +184,32 @@ export default function DiscoverPage() {
     }
 
     try {
+      // 1er essai : avec filtre shownIds
       let items = await tryCollect(true)
 
+      // 2e essai : sans filtre shownIds
       if (items.length < TARGET) {
-        console.log('[suggestions] Pool épuisé — reset shownIds et deuxième tentative')
+        console.log('[suggestions] < TARGET — reset shownIds, 2e tentative sans filtre shownIds')
         shownIds.current = new Set()
         items = await tryCollect(false)
       }
 
+      // 3e essai (fallback) : sans aucune préférence, appel TMDB par défaut
+      if (items.length < TARGET) {
+        console.warn('[suggestions] Toujours < TARGET — fallback sans préférences')
+        const fallback = await tryCollect(false, true)
+        if (fallback.length > items.length) items = fallback
+      }
+
       const final = items.slice(0, TARGET)
-      console.log(`[suggestions] Résultat final : ${final.length} items`)
+      console.log(`[suggestions] ── Résultat final : ${final.length} items ─────────────`)
 
       if (final.length > 0) {
         setSuggestions(final)
         for (const item of final) shownIds.current.add(String(item.id))
       } else {
-        console.warn('[suggestions] Aucun item après toutes les tentatives')
+        console.error('[suggestions] Aucun item après 3 tentatives — vérifier TMDB_KEY et préférences')
         setSuggError('Aucune suggestion disponible. Modifie tes préférences ou réessaie.')
-        // Les anciennes suggestions restent affichées (pas de setSuggestions([]))
       }
     } catch (err) {
       console.error('[suggestions] Erreur inattendue :', err)
@@ -396,22 +416,32 @@ export default function DiscoverPage() {
                       {activeTab === 'book' ? <BookOpen size={32} /> : <Film size={32} />}
                     </div>
                   )}
-                  {/* Emoji de note en overlay bas-droite */}
-                  {userRating != null && (
-                    <div className="absolute bottom-1.5 right-1.5 text-lg leading-none drop-shadow-md">
-                      {RATING_EMOJI[userRating]}
-                    </div>
-                  )}
                 </div>
                 <div className="p-3">
-                  <p className="text-sm font-medium line-clamp-2">{item.title}</p>
-                  <p className="text-xs text-gray-500 mt-1">{item.year}</p>
-                  {item.rating != null && item.rating > 0 && (
-                    <div className="flex items-center gap-1 mt-1">
-                      <Star size={12} className="text-yellow-400 fill-yellow-400" />
-                      <span className="text-xs text-gray-400">{item.rating.toFixed(1)}</span>
-                    </div>
-                  )}
+                  {/* Ligne 1 : titre + emoji de note à droite */}
+                  <div className="flex items-start justify-between gap-1.5">
+                    <p className="text-sm font-medium line-clamp-2 flex-1">{item.title}</p>
+                    {userRating != null && (
+                      <span className="text-base leading-none flex-shrink-0 mt-0.5" title={`Ta note : ${RATING_EMOJI[userRating]}`}>
+                        {RATING_EMOJI[userRating]}
+                      </span>
+                    )}
+                  </div>
+                  {/* Ligne 2 : année · type · note TMDB */}
+                  <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                    {item.year && <span className="text-xs text-gray-500">{item.year}</span>}
+                    <span className="text-xs text-gray-600">·</span>
+                    <span className="text-xs text-gray-500">
+                      {item.mediaType === 'movie' ? 'Film' : item.mediaType === 'series' ? 'Série' : 'Livre'}
+                    </span>
+                    {item.rating != null && item.rating > 0 && (
+                      <>
+                        <span className="text-xs text-gray-600">·</span>
+                        <Star size={10} className="text-yellow-400 fill-yellow-400" />
+                        <span className="text-xs text-gray-400">{item.rating.toFixed(1)}</span>
+                      </>
+                    )}
+                  </div>
                 </div>
               </button>
             )
