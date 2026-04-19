@@ -137,6 +137,25 @@ export default function MediaDrawer({ item, onClose }: Props) {
     setSaved(true)
   }
 
+  async function handleClearRating() {
+    if (!item) return
+    setSaving(true)
+
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setSaving(false); return }
+
+    await supabase.from('favorites')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('media_type', item.mediaType)
+      .eq('external_id', item.id)
+
+    setSelectedRating(null)
+    setSaved(false)
+    setSaving(false)
+  }
+
   const MediaIcon = item?.mediaType === 'book' ? BookOpen : item?.mediaType === 'series' ? Tv : Film
 
   // Build subtitle line: director / creator / country / runtime / seasons
@@ -295,6 +314,16 @@ export default function MediaDrawer({ item, onClose }: Props) {
                   )
                 })}
               </div>
+
+              {/* Effacer la note (visible seulement si déjà noté) */}
+              {saved && !saving && (
+                <button
+                  onClick={handleClearRating}
+                  className="mt-4 w-full text-xs text-gray-600 hover:text-red-400 transition-colors text-center py-2 border border-transparent hover:border-red-900/40 rounded-lg"
+                >
+                  Effacer ma note
+                </button>
+              )}
             </div>
           </div>
         )}

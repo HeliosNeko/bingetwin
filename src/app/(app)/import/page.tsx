@@ -525,6 +525,31 @@ export default function ImportPage() {
     setMatched(prev => prev.map((m, i) => i === index ? { ...m, userRating: rating } : m))
   }
 
+  // Efface la note localement + supprime en base si le titre était déjà noté
+  async function clearRatingForItem(index: number) {
+    const item = matched[index]
+    setRating(index, null)
+
+    const itemKey = `${item.externalId}::${item.preferredType}`
+    if (!preRatedKeys.has(itemKey)) return
+
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
+    await supabase.from('favorites')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('media_type', item.preferredType)
+      .eq('external_id', item.externalId)
+
+    setPreRatedKeys(prev => {
+      const next = new Set(prev)
+      next.delete(itemKey)
+      return next
+    })
+  }
+
   function removeItem(index: number) {
     setMatched(prev => prev.filter((_, i) => i !== index))
   }
@@ -945,7 +970,7 @@ export default function ImportPage() {
                 </div>
                 {item.userRating !== null && (
                   <button
-                    onClick={() => setRating(idx, null)}
+                    onClick={() => clearRatingForItem(idx)}
                     className="text-gray-600 hover:text-gray-400 transition-colors"
                     title="Effacer la note"
                   >
