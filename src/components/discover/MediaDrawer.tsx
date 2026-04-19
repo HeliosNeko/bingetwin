@@ -75,17 +75,19 @@ export default function MediaDrawer({ item, onClose }: Props) {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return
 
-        // Load global rating
-        const { data } = await supabase
-          .from('favorites')
-          .select('rating')
-          .eq('user_id', user.id)
-          .eq('media_type', item.mediaType)
-          .eq('external_id', item.id)
-          .single()
-        if (data?.rating) {
-          setSelectedRating(data.rating)
-          setSaved(true)
+        // Load global rating (movies and books only — series use season ratings)
+        if (item.mediaType !== 'series') {
+          const { data } = await supabase
+            .from('favorites')
+            .select('rating')
+            .eq('user_id', user.id)
+            .eq('media_type', item.mediaType)
+            .eq('external_id', item.id)
+            .single()
+          if (data?.rating) {
+            setSelectedRating(data.rating)
+            setSaved(true)
+          }
         }
 
         // Fetch details + genres
@@ -432,50 +434,49 @@ export default function MediaDrawer({ item, onClose }: Props) {
               </div>
             )}
 
-            {/* ── Global rating ─────────────────────────────────────────── */}
-            <div className="px-5 py-5">
-              <p className="text-sm font-semibold text-gray-300 mb-4">
-                {item.mediaType === 'series'
-                  ? saved ? 'Ta note globale' : 'Note globale de la série'
-                  : saved ? 'Ta note' : "Qu'en as-tu pensé ?"}
-              </p>
+            {/* ── Global rating (movies & books only) ───────────────────── */}
+            {item.mediaType !== 'series' && (
+              <div className="px-5 py-5">
+                <p className="text-sm font-semibold text-gray-300 mb-4">
+                  {saved ? 'Ta note' : "Qu'en as-tu pensé ?"}
+                </p>
 
-              <div className="space-y-3">
-                {RATINGS.map(({ value, label, emoji, color, active }) => {
-                  const isSelected = selectedRating === value
-                  return (
-                    <button
-                      key={value}
-                      onClick={() => handleRate(value)}
-                      disabled={saving}
-                      className={cn(
-                        'w-full flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left',
-                        'border-gray-700 text-gray-400 disabled:cursor-wait',
-                        isSelected ? active : color
-                      )}
-                    >
-                      <span className="w-10 text-center leading-none" style={{ fontSize: '32px' }}>{emoji}</span>
-                      <span className="text-sm font-medium flex-1">{label}</span>
-                      {isSelected && (
-                        saving
-                          ? <Loader2 size={16} className="animate-spin text-current" />
-                          : <Check size={16} className="text-current" />
-                      )}
-                    </button>
-                  )
-                })}
+                <div className="space-y-3">
+                  {RATINGS.map(({ value, label, emoji, color, active }) => {
+                    const isSelected = selectedRating === value
+                    return (
+                      <button
+                        key={value}
+                        onClick={() => handleRate(value)}
+                        disabled={saving}
+                        className={cn(
+                          'w-full flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left',
+                          'border-gray-700 text-gray-400 disabled:cursor-wait',
+                          isSelected ? active : color
+                        )}
+                      >
+                        <span className="w-10 text-center leading-none" style={{ fontSize: '32px' }}>{emoji}</span>
+                        <span className="text-sm font-medium flex-1">{label}</span>
+                        {isSelected && (
+                          saving
+                            ? <Loader2 size={16} className="animate-spin text-current" />
+                            : <Check size={16} className="text-current" />
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {saved && !saving && (
+                  <button
+                    onClick={handleClearRating}
+                    className="mt-4 w-full text-xs text-gray-600 hover:text-red-400 transition-colors text-center py-2 border border-transparent hover:border-red-900/40 rounded-lg"
+                  >
+                    Effacer ma note
+                  </button>
+                )}
               </div>
-
-              {/* Effacer la note globale */}
-              {saved && !saving && (
-                <button
-                  onClick={handleClearRating}
-                  className="mt-4 w-full text-xs text-gray-600 hover:text-red-400 transition-colors text-center py-2 border border-transparent hover:border-red-900/40 rounded-lg"
-                >
-                  Effacer ma note
-                </button>
-              )}
-            </div>
+            )}
           </div>
         )}
       </div>

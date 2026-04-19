@@ -60,7 +60,10 @@ function sortWithSeasonGrouping(favs: Favorite[]): Favorite[] {
 }
 
 function buildGenreSections(favorites: Favorite[]): [string, Favorite[]][] {
-  const rated = favorites.filter(f => f.rating !== null)
+  const rated = favorites.filter(f =>
+    f.rating !== null &&
+    !(f.media_type === 'series' && !/_s\d+$/.test(f.external_id))
+  )
   const map = new Map<string, Favorite[]>()
   const noGenre: Favorite[] = []
 

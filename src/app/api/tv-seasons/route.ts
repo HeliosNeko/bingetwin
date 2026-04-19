@@ -37,7 +37,12 @@ export async function GET(req: NextRequest) {
     }[] = data.seasons ?? []
 
     const seasons: TvSeason[] = raw
-      .filter(s => s.season_number > 0 || s.episode_count > 0)
+      .filter(s =>
+        s.season_number >= 1 &&
+        s.episode_count > 0 &&
+        s.air_date != null &&
+        s.air_date !== ''
+      )
       .map(s => ({
         season_number: s.season_number,
         name:          s.name || `Saison ${s.season_number}`,
