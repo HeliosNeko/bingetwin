@@ -1,15 +1,20 @@
 -- ============================================================
 -- Migration 011 : Exclure les séries globales du matching
--- Réécriture en LANGUAGE sql pur (pas de plpgsql, pas de SELECT INTO)
+-- + Ajout colonne match_type sur la table matches
 -- ============================================================
 
+-- 1. Ajouter la colonne match_type si elle n'existe pas encore
+ALTER TABLE public.matches
+ADD COLUMN IF NOT EXISTS match_type text
+CHECK (match_type IN ('jumeau', 'cousin'));
+
+-- 2. Recréer compute_matches en LANGUAGE sql pur (pas de plpgsql, pas de SELECT INTO)
 CREATE OR REPLACE FUNCTION public.compute_matches(target_user_id uuid)
 RETURNS void
 LANGUAGE sql
 SECURITY DEFINER
 AS $$
 
-  -- ── Upsert : paires avec score ≥ 60 ──────────────────────────────────────
   WITH
 
   others AS (
@@ -94,7 +99,6 @@ AS $$
       match_type       = EXCLUDED.match_type
   )
 
-  -- ── Delete : paires recalculées avec score < 60 ───────────────────────────
   DELETE FROM public.matches m
   USING candidates c
   WHERE c.sim < 60
